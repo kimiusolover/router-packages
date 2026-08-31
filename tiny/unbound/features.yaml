@@ -1,0 +1,19 @@
+schemaVersion: 1
+package: unbound
+features:
+  recursive-cache:
+    classification: required
+  python:
+    classification: excluded
+  doh-client:
+    classification: excluded
+  remote-control:
+    classification: conditional
+    requires:
+      - policy.unbound-remote-control
+  tests:
+    classification: excluded
+  documentation:
+    classification: excluded
+  build-glue:
+    classification: upstream-required

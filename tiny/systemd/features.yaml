@@ -1,0 +1,69 @@
+schemaVersion: 1
+package: systemd
+features:
+  pid1:
+    classification: required
+    build:
+      meson:
+        - -Ddefault-hierarchy=unified
+    runtime:
+      binaries:
+        - /usr/lib/systemd/systemd
+      units:
+        - systemd-journald.service
+  udev:
+    classification: required
+    runtime:
+      binaries:
+        - /usr/bin/udevadm
+      units:
+        - systemd-udevd.service
+  networkd:
+    classification: required
+    runtime:
+      binaries:
+        - /usr/lib/systemd/systemd-networkd
+        - /usr/bin/networkctl
+      units:
+        - systemd-networkd.service
+  resolved:
+    classification: conditional
+    requires:
+      - policy.resolved
+    runtime:
+      binaries:
+        - /usr/lib/systemd/systemd-resolved
+      units:
+        - systemd-resolved.service
+  systemctl:
+    classification: required
+    runtime:
+      binaries:
+        - /usr/bin/systemctl
+  journalctl:
+    classification: required
+    runtime:
+      binaries:
+        - /usr/bin/journalctl
+  networkctl:
+    classification: required
+    runtime:
+      binaries:
+        - /usr/bin/networkctl
+  udevadm:
+    classification: required
+    runtime:
+      binaries:
+        - /usr/bin/udevadm
+  homed:
+    classification: excluded
+  userdb:
+    classification: excluded
+  portable:
+    classification: excluded
+  machined:
+    classification: excluded
+  importd:
+    classification: excluded
+  build-glue:
+    classification: upstream-required

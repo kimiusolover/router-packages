@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+source_id=nftables
+
+build() {
+  meson setup "$BUILD_DIR" "$SOURCE_ROOT" --prefix=/usr --libdir=/usr/lib
+  meson compile -C "$BUILD_DIR"
+  DESTDIR="$DESTDIR" meson install -C "$BUILD_DIR"
+}

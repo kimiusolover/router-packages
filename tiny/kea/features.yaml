@@ -1,0 +1,29 @@
+schemaVersion: 1
+package: kea
+features:
+  dhcp4:
+    classification: required
+    build:
+      cmake:
+        - -DKEA_WITH_MYSQL=OFF
+        - -DKEA_WITH_PGSQL=OFF
+  dhcp6:
+    classification: required
+  hooks:
+    classification: conditional
+    requires:
+      - policy.kea-hooks
+  ddns:
+    classification: excluded
+  control-agent:
+    classification: excluded
+  netconf:
+    classification: excluded
+  tests:
+    classification: excluded
+  examples:
+    classification: excluded
+  documentation:
+    classification: excluded
+  build-glue:
+    classification: upstream-required

@@ -1,3 +1,7 @@
 build/
 dist/
 *.pkg.tar.*
+generated/
+.build/
+__pycache__/
+*.py[cod]

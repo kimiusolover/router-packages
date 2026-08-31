@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+printf '%s\n' '{"capabilities":["wifi.vht","wifi.he","wifi.wpa3","kernel.jool.nat64"]}' > "$work/device.json"
+printf '%s\n' '{"capabilities":["certification.wifi.he","certification.wpa3"]}' > "$work/certification.json"
+printf '%s\n' '{"capabilities":["policy.nat64"]}' > "$work/policy.json"
+"$root/packaging/tiny-plan" --package hostapd --device "$work/device.json" --certification "$work/certification.json" --output "$work/generated" >/dev/null
+profile="$work/generated/hostapd/profile.json"
+grep -q '"id": "ieee80211ax"' "$profile"
+grep -q '"id": "wpa3-sae"' "$profile"
+printf '%s\n' '{"capabilities":[]}' > "$work/no-certification.json"
+"$root/packaging/tiny-plan" --package hostapd --device "$work/device.json" --certification "$work/no-certification.json" --output "$work/no-certification" >/dev/null
+! grep -q '"id": "ieee80211ax"' "$work/no-certification/hostapd/profile.json"
+"$root/packaging/tiny-plan" --package systemd --device "$work/device.json" --certification "$work/certification.json" --output "$work/generated" >/dev/null
+grep -q 'systemd-networkd.service' "$work/generated/systemd/profile.json"
+! grep -q 'systemd-resolved.service' "$work/generated/systemd/profile.json"
+"$root/packaging/tiny-plan" --package jool --device "$work/device.json" --certification "$work/certification.json" --policy "$work/policy.json" --output "$work/generated" >/dev/null
+grep -q '"id": "kernel-capability-check"' "$work/generated/jool/profile.json"
+grep -q '"id": "nat64"' "$work/generated/jool/profile.json"

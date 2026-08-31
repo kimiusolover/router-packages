@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+source_id=unbound
+
+build() {
+  cd "$BUILD_DIR"
+  "$SOURCE_ROOT/configure" --prefix=/usr --sysconfdir=/etc --localstatedir=/var $(tiny_args configure)
+  make
+  make DESTDIR="$DESTDIR" install
+}

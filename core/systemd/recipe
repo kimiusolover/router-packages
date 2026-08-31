@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+source_id=systemd
+
+build() {
+  meson setup "$BUILD_DIR" "$SOURCE_ROOT" \
+    --prefix=/usr --libdir=/usr/lib \
+    -Dmode=release -Dsysusers=true -Dtmpfiles=true -Dfirstboot=false \
+    $(tiny_args meson)
+  meson compile -C "$BUILD_DIR"
+  DESTDIR="$DESTDIR" meson install -C "$BUILD_DIR"
+}

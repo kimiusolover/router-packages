@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""Fail-closed consumer validation for router-upstream source-lock v1."""
+import argparse
+import hashlib
+import json
+import re
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import yaml
+
+SCHEMA_ID = "https://routerctl.dev/schemas/source-lock-v1.schema.json"
+SCHEMA_SHA256 = "8898824e704cc71d74cc2a8913ec0e9ea6edcd597a1915e764a56fe8330c2c63"
+NAME = re.compile(r"^[a-z0-9][a-z0-9._+-]*$")
+SHA256 = re.compile(r"^[a-f0-9]{64}$")
+GIT_REVISION = re.compile(r"^[a-f0-9]{40}(?:[a-f0-9]{24})?$")
+ARCHIVE = re.compile(r"^(?!.*\.\.)(?!.*[/\\])[^\x00-\x1f\x7f]+$")
+HTTPS = re.compile(r"^https://\S+$")
+TOP_LEVEL = {
+    "name", "status", "upstream", "source_type", "revision", "archive",
+    "sha256", "license", "retrieved_at", "provenance",
+}
+PROVENANCE = {"archive_url", "retrieved_by", "retrieval_method", "evidence", "signature"}
+SIGNATURE = {"status", "type", "signer"}
+
+
+def fail(message):
+    raise ValueError(message)
+
+
+def git_clean(directory):
+    try:
+        inside = subprocess.run(
+            ["git", "-C", str(directory), "rev-parse", "--is-inside-work-tree"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "-C", str(directory), "status", "--porcelain"],
+            check=True, capture_output=True, text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        fail(f"router-upstream must be a Git checkout: {exc}")
+    if inside != "true" or status:
+        fail("router-upstream checkout is locally modified; use a clean locked checkout")
+
+
+def mapping(value, label, allowed, required):
+    if not isinstance(value, dict) or set(value) - allowed or not required <= set(value):
+        fail(f"{label} has unknown or missing fields")
+    return value
+
+
+def string(value, label):
+    if not isinstance(value, str) or not value:
+        fail(f"{label} must be a non-empty string")
+    return value
+
+
+def valid_time(value):
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        fail(f"retrieved_at must be RFC 3339: {exc}")
+
+
+def load_and_validate(record_path, source_id, schema_path):
+    try:
+        schema_bytes = schema_path.read_bytes()
+        schema = json.loads(schema_bytes)
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"cannot load source-lock v1 schema: {exc}")
+    if schema.get("$id") != SCHEMA_ID or hashlib.sha256(schema_bytes).hexdigest() != SCHEMA_SHA256:
+        fail("source-lock schema is not the reviewed v1 contract")
+    try:
+        # BaseLoader keeps scalars as strings.  This matches the v1 YAML data
+        # contract and avoids YAML's implicit timestamp/boolean coercions.
+        data = yaml.load(record_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    except (OSError, yaml.YAMLError) as exc:
+        fail(f"cannot parse source lock: {exc}")
+
+    data = mapping(data, "source lock", TOP_LEVEL, TOP_LEVEL)
+    if data["name"] != source_id or not NAME.fullmatch(string(data["name"], "name")):
+        fail("source lock name does not match the requested source identifier")
+    if record_path.stem != source_id:
+        fail("source lock filename does not match the requested source identifier")
+    if data["status"] not in {"pending-verification", "locked"}:
+        fail("status is invalid")
+    if data["status"] != "locked":
+        fail("source lock is not status: locked")
+    if data["source_type"] not in {"git", "archive"}:
+        fail("source_type is invalid")
+    if not HTTPS.fullmatch(string(data["upstream"], "upstream")):
+        fail("upstream must be an HTTPS URL")
+    revision = string(data["revision"], "revision")
+    if revision == "unset" or (data["source_type"] == "git" and not GIT_REVISION.fullmatch(revision)):
+        fail("revision is not immutable for this source type")
+    archive = string(data["archive"], "archive")
+    if archive == "unset" or not ARCHIVE.fullmatch(archive):
+        fail("archive must be a cache filename without path traversal")
+    digest = string(data["sha256"], "sha256")
+    if not SHA256.fullmatch(digest):
+        fail("sha256 must be a lowercase 64-hex digest")
+    string(data["license"], "license")
+    valid_time(string(data["retrieved_at"], "retrieved_at"))
+
+    provenance = mapping(data["provenance"], "provenance", PROVENANCE,
+                         {"archive_url", "retrieved_by", "retrieval_method", "evidence"})
+    if not HTTPS.fullmatch(string(provenance["archive_url"], "provenance.archive_url")):
+        fail("provenance.archive_url must be an HTTPS URL")
+    string(provenance["retrieved_by"], "provenance.retrieved_by")
+    if provenance["retrieval_method"] not in {"manual", "automation"}:
+        fail("provenance.retrieval_method is invalid")
+    if not isinstance(provenance["evidence"], list) or not provenance["evidence"] or not all(isinstance(item, str) and item for item in provenance["evidence"]):
+        fail("provenance.evidence must be a non-empty string list")
+    if "signature" in provenance:
+        signature = mapping(provenance["signature"], "provenance.signature", SIGNATURE, {"status", "type"})
+        if signature["status"] not in {"verified", "not-present", "not-verified"}:
+            fail("provenance.signature.status is invalid")
+        string(signature["type"], "provenance.signature.type")
+        if "signer" in signature:
+            string(signature["signer"], "provenance.signature.signer")
+    return archive, digest
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--upstream-dir", required=True, type=Path)
+    parser.add_argument("--source-id", required=True)
+    parser.add_argument("--cache", required=True, type=Path)
+    args = parser.parse_args()
+    try:
+        if not NAME.fullmatch(args.source_id):
+            fail("source identifier is invalid")
+        upstream = args.upstream_dir.resolve(strict=True)
+        git_clean(upstream)
+        archive, expected_digest = load_and_validate(
+            upstream / "sources" / f"{args.source_id}.yaml",
+            args.source_id,
+            upstream / "schemas" / "source-lock-v1.schema.json",
+        )
+        cached = args.cache / archive
+        if not cached.is_file():
+            fail(f"locked archive missing from cache: {cached}")
+        with cached.open("rb") as archive_file:
+            actual_digest = hashlib.file_digest(archive_file, "sha256").hexdigest()
+        if actual_digest != expected_digest:
+            fail(f"archive digest mismatch for {args.source_id}")
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
+    print(cached)
+
+
+if __name__ == "__main__":
+    main()

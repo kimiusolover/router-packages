@@ -1,0 +1,4 @@
+[Unit]
+Description=Router package network prerequisites reached
+After=systemd-networkd.service
+Wants=systemd-networkd.service

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+source_id=jool
+
+build() {
+  : "${KERNEL_HEADERS:?Jool requires headers from the locked target kernel build}"
+  cd "$BUILD_DIR"
+  "$SOURCE_ROOT/configure" --prefix=/usr --with-kernel="$KERNEL_HEADERS" $(tiny_args configure)
+  make
+  make DESTDIR="$DESTDIR" install
+}

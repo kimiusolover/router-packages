@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Exercise the locked-input consumer boundary without downloading or building.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+fixture=$(mktemp -d)
+trap 'rm -rf "$fixture"' EXIT
+
+make_fixture() {
+  local name=$1 upstream cache digest
+  upstream="$fixture/$name/router-upstream"
+  cache="$fixture/$name/cache"
+  mkdir -p "$upstream/sources" "$upstream/schemas" "$cache"
+  cp "$root/../router-upstream/schemas/source-lock-v1.schema.json" "$upstream/schemas/"
+  printf 'locked source archive\n' > "$cache/systemd-1.0.tar.gz"
+  digest=$(sha256sum "$cache/systemd-1.0.tar.gz" | awk '{print $1}')
+  cat > "$upstream/sources/systemd.yaml" <<EOF
+name: systemd
+status: locked
+upstream: https://github.com/systemd/systemd
+source_type: git
+revision: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+archive: systemd-1.0.tar.gz
+sha256: $digest
+license: LGPL-2.1-or-later
+retrieved_at: 2026-08-31T00:00:00Z
+provenance:
+  archive_url: https://github.com/systemd/systemd/archive/refs/tags/v1.0.tar.gz
+  retrieved_by: fixture-reviewer
+  retrieval_method: manual
+  evidence:
+    - upstream release checksum
+EOF
+  git -C "$upstream" init -q
+  git -C "$upstream" add .
+  git -C "$upstream" -c user.name=fixture -c user.email=fixture@example.invalid commit -qm fixture
+  printf '%s\n%s\n' "$upstream" "$cache"
+}
+
+expect_rejected() {
+  local label=$1 upstream=$2 cache=$3
+  if "$root/packaging/verify-source-lock" --upstream-dir "$upstream" --source-id systemd --cache "$cache" >/dev/null 2>&1; then
+    echo "$label was accepted" >&2
+    exit 1
+  fi
+}
+
+readarray -t paths < <(make_fixture valid)
+upstream=${paths[0]}
+cache=${paths[1]}
+"$root/packaging/verify-source-lock" --upstream-dir "$upstream" --source-id systemd --cache "$cache" >/dev/null
+printf '\n# local change\n' >> "$upstream/sources/systemd.yaml"
+expect_rejected "locally modified source-lock checkout" "$upstream" "$cache"
+
+readarray -t paths < <(make_fixture digest-mismatch)
+upstream=${paths[0]}
+cache=${paths[1]}
+sed -i 's/^sha256:.*/sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc/' "$upstream/sources/systemd.yaml"
+git -C "$upstream" add sources/systemd.yaml
+git -C "$upstream" -c user.name=fixture -c user.email=fixture@example.invalid commit -qm digest-mismatch
+expect_rejected "SHA-256 mismatch" "$upstream" "$cache"
+
+readarray -t paths < <(make_fixture missing-provenance)
+upstream=${paths[0]}
+cache=${paths[1]}
+sed -i '/^  retrieved_by:/d; /^  retrieval_method:/d; /^  evidence:/d; /^    - upstream release checksum/d' "$upstream/sources/systemd.yaml"
+git -C "$upstream" add sources/systemd.yaml
+git -C "$upstream" -c user.name=fixture -c user.email=fixture@example.invalid commit -qm missing-provenance
+expect_rejected "missing retrieval provenance" "$upstream" "$cache"
+
+readarray -t paths < <(make_fixture mutable-revision)
+upstream=${paths[0]}
+cache=${paths[1]}
+sed -i 's/^revision:.*/revision: main/' "$upstream/sources/systemd.yaml"
+git -C "$upstream" add sources/systemd.yaml
+git -C "$upstream" -c user.name=fixture -c user.email=fixture@example.invalid commit -qm mutable-revision
+expect_rejected "mutable Git revision" "$upstream" "$cache"
+
+echo "source-lock consumer boundary is fail-closed"

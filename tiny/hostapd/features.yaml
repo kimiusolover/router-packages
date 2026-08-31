@@ -1,0 +1,49 @@
+schemaVersion: 1
+package: hostapd
+features:
+  ap:
+    classification: required
+  nl80211:
+    classification: required
+  ieee80211n:
+    classification: required
+  ieee80211ac:
+    classification: conditional
+    requires:
+      - wifi.vht
+  ieee80211ax:
+    classification: conditional
+    requires:
+      - wifi.he
+      - certification.wifi.he
+  wpa2:
+    classification: required
+  wpa3-sae:
+    classification: conditional
+    requires:
+      - wifi.wpa3
+      - certification.wpa3
+  ieee80211r:
+    classification: conditional
+    requires:
+      - wifi.80211r
+  ieee80211k:
+    classification: conditional
+    requires:
+      - wifi.80211k
+  ieee80211v:
+    classification: conditional
+    requires:
+      - wifi.80211v
+  mesh:
+    classification: conditional
+    requires:
+      - wifi.mesh
+  wps:
+    classification: excluded
+  wired-authenticator:
+    classification: excluded
+  unnecessary-eap-methods:
+    classification: excluded
+  build-glue:
+    classification: upstream-required

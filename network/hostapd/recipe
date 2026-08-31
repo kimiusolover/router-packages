@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+source_id=hostapd
+
+build() {
+  : "${CROSS_COMPILE:?hostapd requires CROSS_COMPILE for a target build}"
+  make -C "$SOURCE_ROOT/hostapd" CC="${CC:-${CROSS_COMPILE}gcc}" \
+    BINDIR=/usr/bin SBINDIR=/usr/bin
+  install -Dm755 "$SOURCE_ROOT/hostapd/hostapd" "$DESTDIR/usr/bin/hostapd"
+}

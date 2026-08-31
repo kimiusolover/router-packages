@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Static checks intentionally do not download or build unverified inputs.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+components=(systemd hostapd kea unbound nftables jool)
+tiny_components=(systemd hostapd kea unbound jool)
+
+for component in "${components[@]}"; do
+  recipe="$root/$([ "$component" = systemd ] && printf core || printf network)/$component/recipe"
+  test -f "$recipe" || { echo "missing recipe: $component" >&2; exit 1; }
+  bash -n "$recipe"
+done
+
+for component in "${tiny_components[@]}"; do
+  test -s "$root/tiny/$component/features.yaml" || { echo "missing tiny policy: $component" >&2; exit 1; }
+done
+python3 "$root/packaging/tiny-plan" --help >/dev/null
+python3 "$root/packaging/tiny-build-args" 2>/dev/null || test "$?" -eq 1
+python3 -m py_compile "$root/packaging/verify-source-lock"
+
+for file in \
+  "$root/network/hostapd/files/hostapd.service.d/router.conf" \
+  "$root/network/kea/files/kea-dhcp4.service.d/router.conf" \
+  "$root/network/unbound/files/unbound.service.d/router.conf" \
+  "$root/network/nftables/files/nftables.service.d/router.conf" \
+  "$root/network/jool/files/jool.service.d/router.conf"; do
+  test -s "$file" || { echo "missing integration drop-in: $file" >&2; exit 1; }
+  grep -qx 'After=router-network-ready.target' "$file" || {
+    echo "drop-in is not ordered after router-network-ready.target: $file" >&2
+    exit 1
+  }
+done
+
+echo "router package recipes and service integration are structurally valid"

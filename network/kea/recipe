@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+source_id=kea
+
+build() {
+  cmake -S "$SOURCE_ROOT" -B "$BUILD_DIR" \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+    -DKEA_INSTALL_PREFIX=/usr -DKEA_WITH_MYSQL=OFF -DKEA_WITH_PGSQL=OFF \
+    $(tiny_args cmake)
+  cmake --build "$BUILD_DIR"
+  DESTDIR="$DESTDIR" cmake --install "$BUILD_DIR"
+}

@@ -1,0 +1,21 @@
+schemaVersion: 1
+package: jool
+features:
+  nat64:
+    classification: conditional
+    requires:
+      - kernel.jool.nat64
+      - policy.nat64
+  siit:
+    classification: conditional
+    requires:
+      - kernel.jool.siit
+      - policy.nat64
+  kernel-capability-check:
+    classification: required
+  developer-tools:
+    classification: excluded
+  tests:
+    classification: excluded
+  build-glue:
+    classification: upstream-required

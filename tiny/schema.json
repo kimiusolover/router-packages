@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://routeros.example/schema/tiny-layer/v1.json",
+  "title": "router-packages tiny-layer v1",
+  "description": "The normative shape of tiny/*/features.yaml. YAML is accepted by the planner; this JSON Schema documents its data model.",
+  "type": "object",
+  "required": ["schemaVersion", "package", "features"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "package": { "enum": ["systemd", "kea", "unbound", "hostapd", "jool"] },
+    "features": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["classification"],
+        "additionalProperties": false,
+        "properties": {
+          "classification": { "enum": ["required", "conditional", "excluded", "upstream-required"] },
+          "requires": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+          "build": { "type": "object", "additionalProperties": { "type": "array", "items": { "type": "string" } } },
+          "runtime": { "type": "object", "additionalProperties": { "type": "array", "items": { "type": "string" } } }
+        }
+      }
+    }
+  }
+}
