@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# The only package-build entry point for AX23V.  It deliberately delegates the
+# target gate to router-upstream before a recipe can extract or compile source.
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: $0 <systemd|hostapd|kea|unbound|nftables|jool>" >&2
+  exit 64
+fi
+
+package=$1
+root=$(cd "$(dirname "$0")/.." && pwd)
+: "${ROUTER_UPSTREAM_DIR:?set ROUTER_UPSTREAM_DIR to a locked router-upstream checkout}"
+: "${ROUTER_SOURCE_CACHE:?set ROUTER_SOURCE_CACHE to the verified source and toolchain cache}"
+
+toolchain_record=${ROUTER_AX23V_TOOLCHAIN_RECORD:-"$ROUTER_UPSTREAM_DIR/toolchains/mipsel-24kc-musl.yaml"}
+target_gate="$ROUTER_UPSTREAM_DIR/cross/verify-ax23v-build"
+test -x "$target_gate" || { echo "missing AX23V target gate: $target_gate" >&2; exit 65; }
+test -r "$toolchain_record" || { echo "missing AX23V toolchain record: $toolchain_record" >&2; exit 65; }
+
+exec "$target_gate" \
+  --record "$toolchain_record" \
+  --upstream-dir "$ROUTER_UPSTREAM_DIR" \
+  --source-cache "$ROUTER_SOURCE_CACHE" \
+  --execute -- "$root/packaging/build-package" "$package"

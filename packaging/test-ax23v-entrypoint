@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# This test must remain offline: it verifies that AX23V has no generic bypass.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+entry="$root/packaging/build-ax23v-package"
+
+bash -n "$entry"
+grep -Fq 'cross/verify-ax23v-build' "$entry"
+grep -Fq -- '--execute -- "$root/packaging/build-package" "$package"' "$entry"
+
+if "$entry" hostapd >/dev/null 2>&1; then
+  echo "AX23V entry point accepted a missing target gate environment" >&2
+  exit 1
+fi
+
+echo "AX23V package entry point is target-gated"
