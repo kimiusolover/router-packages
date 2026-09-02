@@ -18,6 +18,8 @@ done
 python3 "$root/packaging/tiny-plan" --help >/dev/null
 python3 "$root/packaging/tiny-build-args" 2>/dev/null || test "$?" -eq 1
 python3 -m py_compile "$root/packaging/verify-source-lock"
+bash -n "$root/packaging/build-ax23v-package"
+"$root/packaging/test-ax23v-entrypoint"
 
 for file in \
   "$root/network/hostapd/files/hostapd.service.d/router.conf" \
