@@ -4,7 +4,7 @@
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then
-  echo "usage: $0 <systemd|hostapd|kea|unbound|nftables|jool>" >&2
+  echo "usage: $0 <systemd|hostapd|kea|unbound|nftables|jool|router-prefix>" >&2
   exit 64
 fi
 
@@ -12,12 +12,10 @@ package=$1
 root=$(cd "$(dirname "$0")/.." && pwd)
 case "$package" in
   systemd) recipe="$root/core/systemd/recipe" ;;
-  hostapd|kea|unbound|nftables|jool) recipe="$root/network/$package/recipe" ;;
+  hostapd|kea|unbound|nftables|jool|router-prefix) recipe="$root/network/$package/recipe" ;;
   *) echo "unknown package: $package" >&2; exit 64 ;;
 esac
 
-: "${ROUTER_UPSTREAM_DIR:?set ROUTER_UPSTREAM_DIR to a locked router-upstream checkout}"
-: "${ROUTER_SOURCE_CACHE:?set ROUTER_SOURCE_CACHE to the verified source-archive cache}"
 : "${DESTDIR:?set DESTDIR to the package staging directory}"
 
 # Recipes are repository-controlled shell fragments.  They set source_id and
@@ -30,20 +28,31 @@ if [ -n "${TINY_PROFILE:-}" ]; then
 else
   tiny_args() { :; }
 fi
-map="$ROUTER_UPSTREAM_DIR/sources/$source_id.yaml"
-test -r "$map" || { echo "missing source map: $map" >&2; exit 65; }
-
-archive=$("$root/packaging/verify-source-lock" \
-  --upstream-dir "$ROUTER_UPSTREAM_DIR" \
-  --source-id "$source_id" \
-  --cache "$ROUTER_SOURCE_CACHE")
-
 work_root=${ROUTER_BUILD_ROOT:-"$root/.build"}
 rm -rf "$work_root/$package"
 mkdir -p "$work_root/$package/src" "$DESTDIR"
-bsdtar -xf "$archive" -C "$work_root/$package/src"
-source_root=$(find "$work_root/$package/src" -mindepth 1 -maxdepth 1 -type d | head -n1)
-test -n "$source_root" || { echo "archive has no source directory: $archive" >&2; exit 65; }
+
+if [ "${source_kind:-upstream}" = internal ]; then
+  git -C "$root" diff --quiet && git -C "$root" diff --cached --quiet || {
+    echo "internal package build requires a clean router-packages checkout" >&2; exit 65;
+  }
+  test -z "$(git -C "$root" ls-files --others --exclude-standard)" || {
+    echo "internal package build requires no untracked router-packages files" >&2; exit 65;
+  }
+  source_root=$root/network/$package/files
+  ROUTER_PACKAGES_REVISION=$(git -C "$root" rev-parse HEAD)
+  export ROUTER_PACKAGES_REVISION
+else
+  : "${ROUTER_UPSTREAM_DIR:?set ROUTER_UPSTREAM_DIR to a locked router-upstream checkout}"
+  : "${ROUTER_SOURCE_CACHE:?set ROUTER_SOURCE_CACHE to the verified source-archive cache}"
+  map="$ROUTER_UPSTREAM_DIR/sources/$source_id.yaml"
+  test -r "$map" || { echo "missing source map: $map" >&2; exit 65; }
+  archive=$("$root/packaging/verify-source-lock" --upstream-dir "$ROUTER_UPSTREAM_DIR" \
+    --source-id "$source_id" --cache "$ROUTER_SOURCE_CACHE")
+  bsdtar -xf "$archive" -C "$work_root/$package/src"
+  source_root=$(find "$work_root/$package/src" -mindepth 1 -maxdepth 1 -type d | head -n1)
+  test -n "$source_root" || { echo "archive has no source directory: $archive" >&2; exit 65; }
+fi
 
 export SOURCE_ROOT="$source_root" BUILD_DIR="$work_root/$package/build" DESTDIR
 mkdir -p "$BUILD_DIR"
@@ -53,7 +62,7 @@ build
 # deliberately drop-ins and a target only; deployments retain ownership of
 # actual network, DHCP, DNS, firewall, and radio policy files.
 integration_dir="$root/network/$package/files"
-if [ -d "$integration_dir" ]; then
+if [ "${source_kind:-upstream}" != internal ] && [ -d "$integration_dir" ]; then
   while IFS= read -r -d '' file; do
     relative=${file#"$integration_dir"/}
     install -Dm644 "$file" "$DESTDIR/usr/lib/systemd/system/$relative"

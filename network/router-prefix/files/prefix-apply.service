@@ -1,0 +1,8 @@
+[Unit]
+Description=Apply RouterOS IPv6 Prefix Runtime Configuration
+After=prefix-manager.service
+Wants=prefix-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/routeros/prefix-apply apply

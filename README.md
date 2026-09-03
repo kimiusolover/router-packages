@@ -10,7 +10,7 @@ belong to `router-platform`; image assembly belongs to `router-firmware`.
 
 ```
 core/       # base OS components such as systemd
-network/    # Kea, Unbound, hostapd, Jool, nftables, and related services
+network/    # Kea, Unbound, hostapd, Jool, nftables, router-prefix, and related services
 packaging/  # shared package build and publication conventions
 ```
 
@@ -42,6 +42,14 @@ platform- and deployment-specific inputs.
 
 `make check` validates all recipe syntax and the service-ordering drop-ins
 without downloading or compiling software.
+
+## IPv6 prefix runtime
+
+`router-prefix` is a target-side IPv6 prefix runtime. It persists one RFC 4193
+ULA `/48`, selects `static > DHCPv6-PD > ULA`, allocates configured `/64`s,
+and writes runtime-only networkd fragments. It deliberately does not reuse a
+WAN RA `/64` for LAN networks. See
+[`network/router-prefix/README.md`](network/router-prefix/README.md).
 
 ## Tiny Planner
 

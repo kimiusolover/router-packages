@@ -3,7 +3,7 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-components=(systemd hostapd kea unbound nftables jool)
+components=(systemd hostapd kea unbound nftables jool router-prefix)
 tiny_components=(systemd hostapd kea unbound jool)
 
 for component in "${components[@]}"; do
@@ -20,6 +20,7 @@ python3 "$root/packaging/tiny-build-args" 2>/dev/null || test "$?" -eq 1
 python3 -m py_compile "$root/packaging/verify-source-lock"
 bash -n "$root/packaging/build-ax23v-package"
 "$root/packaging/test-ax23v-entrypoint"
+"$root/packaging/test-router-prefix"
 
 for file in \
   "$root/network/hostapd/files/hostapd.service.d/router.conf" \

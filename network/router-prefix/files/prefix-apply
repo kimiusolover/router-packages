@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+lib=${ROUTER_PREFIX_LIB:-/usr/lib/routeros}; run=${ROUTER_PREFIX_RUN:-/run/routeros/prefix}
+networkd=${ROUTER_PREFIX_NETWORKD_RUN:-/run/systemd/network}
+[ "${1:-}" = apply ] || { echo "usage: prefix-apply apply" >&2; exit 64; }
+"$lib/prefix-manager" ensure; mkdir -p "$networkd"
+if [ -r "$run/networkd-directories" ]; then
+  while IFS= read -r directory; do
+    [[ $directory =~ ^20-routeros-[a-z][a-z0-9-]*\.network\.d$ ]] || {
+      echo "invalid managed networkd directory: $directory" >&2; exit 65;
+    }
+    rm -rf "$networkd/$directory"
+  done <"$run/networkd-directories"
+fi
+: >"$run/networkd-directories.new.$$"
+while IFS='=' read -r network prefix; do
+  directory="$networkd/20-routeros-$network.network.d"; mkdir -p "$directory"
+  printf '%s\n' "${directory##*/}" >>"$run/networkd-directories.new.$$"
+  gateway="${prefix%/*}"; gateway="${gateway%::*}::1/64"
+  cat >"$directory/50-prefix.conf" <<EOF
+[Network]
+IPv6SendRA=yes
+
+[Address]
+Address=$gateway
+
+[IPv6SendRA]
+RouterLifetimeSec=1800
+
+[IPv6Prefix]
+Prefix=$prefix
+PreferredLifetimeSec=1800
+ValidLifetimeSec=3600
+EOF
+done <"$run/allocations"
+mv -f "$run/networkd-directories.new.$$" "$run/networkd-directories"

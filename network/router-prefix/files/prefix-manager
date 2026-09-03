@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Persistent registry and source-selection policy for router IPv6 prefixes.
+set -euo pipefail
+lib=${ROUTER_PREFIX_LIB:-/usr/lib/routeros}; etc=${ROUTER_PREFIX_ETC:-/etc/routeros}
+state=${ROUTER_PREFIX_STATE:-/var/lib/routeros/prefix}; run=${ROUTER_PREFIX_RUN:-/run/routeros/prefix}
+config=${ROUTER_PREFIX_CONFIG:-$etc/prefix.conf}; pd_file=${ROUTER_PREFIX_PD_FILE:-$run/delegated}
+generator=${ROUTER_PREFIX_GENERATOR:-$lib/prefix-generator}
+[ -r "$config" ] || config=$lib/prefix.conf
+value() { sed -n "s/^$1=//p" "$2" 2>/dev/null | tail -n1; }
+conf() { value "$1" "$config" || true; }
+valid_prefix() { [[ $1 =~ ^[0-9A-Fa-f:]+/(48|56)$ && $1 != *:::* && $1 == *::* ]]; }
+atomic_write() { local target=$1 temp="$1.new.$$"; umask 077; cat >"$temp"; mv -f "$temp" "$target"; }
+ensure_ula() {
+  local ula; ula=$(value Prefix "$state/ula" || true)
+  if [ -n "$ula" ]; then [[ $ula =~ ^fd[0-9a-f]{2}:[0-9a-f]{4}:[0-9a-f]{4}::/48$ ]] || { echo "invalid persisted ULA" >&2; return 65; }; return; fi
+  ula=$($generator) || { echo "ULA generation failed" >&2; return 70; }
+  [[ $ula =~ ^fd[0-9a-f]{2}:[0-9a-f]{4}:[0-9a-f]{4}::/48$ ]] || { echo "generator produced invalid ULA" >&2; return 70; }
+  { printf '[Prefix]\nType=ula\nPrefix=%s\nCreated=%s\n' "$ula" "$(date --iso-8601=seconds)"; } | atomic_write "$state/ula"
+}
+selected() {
+  local static delegated ula; static=$(conf StaticPrefix)
+  if [ -n "$static" ]; then valid_prefix "$static" || { echo "invalid StaticPrefix" >&2; return 65; }; printf 'static %s\n' "$static"; return; fi
+  delegated=$(value Prefix "$pd_file" || true)
+  if [ -n "$delegated" ]; then valid_prefix "$delegated" || { echo "invalid delegated prefix" >&2; return 65; }; printf 'delegated %s\n' "$delegated"; return; fi
+  ensure_ula; ula=$(value Prefix "$state/ula"); printf 'generated %s\n' "$ula"
+}
+subnet() {
+  local prefix=$1 id=$2 base last hi
+  [[ $id =~ ^([1-9]|[1-9][0-9]|1[0-9]{2}|2[0-5][0-9])$ ]] || { echo "allocation must be 1..255" >&2; return 64; }
+  base=${prefix%::*}; last=${base##*:}
+  if [[ $prefix == */48 ]]; then printf '%s:%x::/64\n' "$base" "$id"; return; fi
+  hi=${last:0:2}; printf '%s:%s%02x::/64\n' "${base%:*}" "$hi" "$id"
+}
+write_registry() {
+  local source prefix name id; read -r source prefix < <(selected)
+  { printf '[Active]\nSource=%s\nPrefix=%s\n' "$source" "$prefix"; } | atomic_write "$run/active"
+  : >"$run/allocations.new.$$"
+  while IFS='=' read -r name id; do
+    [[ $name =~ ^[a-z][a-z0-9-]*$ ]] || continue
+    printf '%s=%s\n' "$name" "$(subnet "$prefix" "$id")" >>"$run/allocations.new.$$"
+  done < <(awk '/^\[Allocation\]/{active=1;next} /^\[/{active=0} active && /^[a-z]/{print}' "$config")
+  mv -f "$run/allocations.new.$$" "$run/allocations"
+}
+show() { write_registry; cat "$run/active"; cat "$run/allocations"; }
+allocate() { write_registry; awk -F= -v name="$1" '$1 == name { print; found=1 } END { exit !found }' "$run/allocations" || { echo "unknown allocation: $1" >&2; return 64; }; }
+mkdir -p "$state" "$run"
+case ${1:-} in
+  ensure) write_registry ;; show|status|list) show ;; generate) ensure_ula; cat "$state/ula" ;;
+  allocate) [ $# -eq 2 ] || { echo "usage: prefix-manager allocate <network>" >&2; exit 64; }; allocate "$2" ;;
+  *) echo "usage: prefix-manager {ensure|show|status|list|generate|allocate}" >&2; exit 64 ;;
+esac
