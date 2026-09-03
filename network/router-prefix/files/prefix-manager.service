@@ -1,0 +1,14 @@
+[Unit]
+Description=RouterOS IPv6 Prefix Manager
+Wants=network-online.target
+After=network-online.target
+Before=router-network-ready.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/routeros/prefix-manager ensure
+ExecStart=/usr/lib/routeros/prefix-apply apply
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

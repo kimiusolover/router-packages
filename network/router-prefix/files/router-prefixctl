@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+lib=${ROUTER_PREFIX_LIB:-/usr/lib/routeros}
+case ${1:-} in
+  show|status|list|generate) exec "$lib/prefix-manager" "$1" ;;
+  allocate) shift; exec "$lib/prefix-manager" allocate "$@" ;;
+  apply) exec "$lib/prefix-apply" apply ;;
+  *) echo "usage: router-prefixctl {show|status|list|generate|allocate|apply}" >&2; exit 64 ;;
+esac

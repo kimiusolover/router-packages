@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+source_kind=internal
+
+build() {
+  cc -O2 -Wall -Wextra -Werror "$SOURCE_ROOT/prefix-generator.c" -o "$BUILD_DIR/router-prefix-generator"
+  install -Dm755 "$BUILD_DIR/router-prefix-generator" "$DESTDIR/usr/lib/routeros/prefix-generator"
+  for program in prefix-manager prefix-apply; do
+    install -Dm755 "$SOURCE_ROOT/$program" "$DESTDIR/usr/lib/routeros/$program"
+  done
+  install -Dm755 "$SOURCE_ROOT/router-prefixctl" "$DESTDIR/usr/bin/router-prefixctl"
+  install -Dm644 "$SOURCE_ROOT/prefix.conf" "$DESTDIR/usr/lib/routeros/prefix.conf"
+  install -Dm644 "$SOURCE_ROOT/prefix-manager.service" "$DESTDIR/usr/lib/systemd/system/prefix-manager.service"
+  install -Dm644 "$SOURCE_ROOT/prefix-apply.service" "$DESTDIR/usr/lib/systemd/system/prefix-apply.service"
+  install -Dm644 "$SOURCE_ROOT/router-prefix.conf" "$DESTDIR/usr/lib/tmpfiles.d/router-prefix.conf"
+  install -d "$DESTDIR/usr/share/routeros/provenance"
+  printf '{"component":"router-prefix","source":"router-packages","revision":"%s"}\n' \
+    "$ROUTER_PACKAGES_REVISION" >"$DESTDIR/usr/share/routeros/provenance/router-prefix-build.json"
+}

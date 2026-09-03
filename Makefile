@@ -1,4 +1,4 @@
-.PHONY: check test-tiny-plan test-source-lock test-ax23v-entrypoint build-% build-ax23v-%
+.PHONY: check test-tiny-plan test-source-lock test-ax23v-entrypoint test-router-prefix build-% build-ax23v-%
 
 check:
 	./packaging/check
@@ -11,6 +11,9 @@ test-source-lock:
 
 test-ax23v-entrypoint:
 	./packaging/test-ax23v-entrypoint
+
+test-router-prefix:
+	./packaging/test-router-prefix
 
 build-%:
 	./packaging/build-package "$*"
