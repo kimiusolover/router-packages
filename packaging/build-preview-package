@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Build a fixed internal source into an unsigned pacman preview candidate."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import runpy
+import shutil
+import subprocess
+import tarfile
+import tempfile
+
+
+def run(*args, **kwargs):
+    return subprocess.check_output([str(x) for x in args], **kwargs)
+
+
+def digest(path):
+    with open(path, 'rb') as f:
+        return hashlib.file_digest(f, 'sha256').hexdigest()
+
+
+def clean(repo):
+    if run('git', '-C', repo, 'status', '--porcelain', '--untracked-files=all').strip():
+        raise ValueError('source checkout must be clean, including untracked files')
+    return run('git', '-C', repo, 'rev-parse', 'HEAD').decode().strip()
+
+
+def build(args):
+    repo = args.source.resolve()
+    revision = clean(repo)
+    epoch = int(run('git', '-C', repo, 'show', '-s', '--format=%ct', revision))
+    output = args.output.resolve()
+    if output.exists():
+        raise ValueError('output already exists; choose a new candidate directory')
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.package-', dir=output.parent) as tmp:
+        work = Path(tmp)
+        source = work / 'source'
+        source.mkdir()
+        archive = work / 'router-packages-source.tar'
+        archive.write_bytes(run('git', '-C', repo, 'archive', '--format=tar', revision))
+        with tarfile.open(archive) as tar:
+            tar.extractall(source, filter='data')
+        stage = work / 'root'
+        stage.mkdir()
+        build_dir = work / 'build'
+        build_dir.mkdir()
+        candidate = work / 'candidate'
+        candidate.mkdir()
+        shutil.copyfile(archive, candidate / archive.name)
+        env = {'PATH': '/usr/bin:/bin', 'HOME': str(work), 'LC_ALL': 'C',
+               'SOURCE_DATE_EPOCH': str(epoch), 'ROUTER_PACKAGES_REVISION': revision,
+               'SOURCE_ROOT': str(source / 'network/router-prefix/files'),
+               'BUILD_DIR': str(build_dir), 'DESTDIR': str(stage)}
+        if args.development_host:
+            if platform.machine() != 'x86_64' or platform.libc_ver()[0] != 'glibc':
+                raise ValueError('development mode requires x86_64 glibc host')
+            compiler = Path(shutil.which('cc')).resolve()
+            env['CC'] = str(compiler)
+            abi = 'x86_64-glibc-development'
+            toolchain = {'kind': 'unlocked-development-host', 'compiler_sha256': digest(compiler),
+                         'version': run(compiler, '--version').decode().splitlines()[0]}
+        else:
+            upstream = args.upstream.resolve()
+            upstream_revision = clean(upstream)
+            verifier = runpy.run_path(str(upstream / 'cross/verify-toolchain'))
+            record_path = upstream / 'toolchains/x86-64-musl.yaml'
+            record = verifier['load_yaml'](record_path, 'toolchain')
+            verifier['validate_toolchain'](record, record_path)
+            if (record['architecture'], record['libc']) != ('x86_64', 'musl'):
+                raise ValueError('only x86_64 musl preview toolchain is supported')
+            locked_archive, sha = verifier['verify_source_lock'](upstream, record['source_lock'], args.cache)
+            extraction = work / 'toolchain'
+            extraction.mkdir()
+            verifier['extract_toolchain'](locked_archive, extraction)
+            root = (extraction / record['archive_root']).resolve(strict=True)
+            if not root.is_relative_to(extraction):
+                raise ValueError('toolchain root escapes extraction')
+            compiler = root / 'bin' / (record['compiler_prefix'] + 'gcc')
+            if verifier['run_compiler'](compiler, '-dumpmachine') != record['compiler_triplet']:
+                raise ValueError('compiler triplet mismatch')
+            sysroot = (root / record['sysroot']).resolve(strict=True)
+            actual = Path(verifier['run_compiler'](compiler, '--print-sysroot')).resolve(strict=True)
+            if actual != sysroot or not sysroot.is_relative_to(root):
+                raise ValueError('compiler sysroot mismatch')
+            env.update(CC=str(compiler), SYSROOT=str(sysroot), STAGING_DIR=str(sysroot), PKG_CONFIG_DIR='',
+                       PKG_CONFIG_PATH='', PKG_CONFIG_SYSROOT_DIR=str(sysroot),
+                       PKG_CONFIG_LIBDIR=f'{sysroot}/usr/lib/pkgconfig:{sysroot}/usr/share/pkgconfig')
+            abi = 'x86_64-musl'
+            toolchain = {'kind': 'locked', 'upstream_revision': upstream_revision,
+                         'archive': locked_archive.name, 'sha256': sha,
+                         'record_sha256': digest(record_path), 'triplet': record['compiler_triplet']}
+        subprocess.run(['bash', '-eu', '-c', 'source "$1"; build', 'build',
+                        str(source / 'network/router-prefix/recipe')], env=env, check=True)
+        binary = stage / 'usr/lib/routeros/prefix-generator'
+        header = run('readelf', '-h', binary).decode()
+        program = run('readelf', '-l', binary).decode()
+        if 'Advanced Micro Devices X86-64' not in header:
+            raise ValueError('package binary is not x86_64')
+        expected = 'ld-musl-x86_64.so.1' if abi == 'x86_64-musl' else 'ld-linux-x86-64.so.2'
+        if expected not in program:
+            raise ValueError('package ELF interpreter does not match ABI')
+        dynamic = run('readelf', '-d', binary).decode()
+        versions = run('readelf', '--version-info', binary).decode()
+        if abi == 'x86_64-musl' and ('GLIBC_' in versions or '[libc.so.6]' in dynamic or '[libc.so]' not in dynamic):
+            raise ValueError('musl binary contains foreign libc dependencies')
+        version = '0.1.r' + str(epoch) + '.g' + revision[:12] + '-1'
+        size = sum(p.stat().st_size for p in stage.rglob('*') if p.is_file())
+        dependencies = ['bash', 'coreutils', 'gawk', 'sed', 'systemd',
+                        'musl' if abi == 'x86_64-musl' else 'glibc']
+        if abi == 'x86_64-musl':
+            dependencies.append('libgcc')
+        info = {'pkgname': 'router-prefix', 'pkgbase': 'router-prefix', 'pkgver': version,
+                'pkgdesc': 'Router OS persistent IPv6 prefix runtime (preview candidate)',
+                'url': '', 'builddate': str(epoch), 'packager': 'Router OS preview builder',
+                'size': str(size), 'arch': 'x86_64'}
+        (stage / '.PKGINFO').write_text(''.join(f'{k} = {v}\n' for k, v in info.items()) +
+                                       ''.join(f'depend = {v}\n' for v in dependencies))
+        name = f'router-prefix-{version}-x86_64.pkg.tar.zst'
+        plain = work / 'package.tar'
+        with tarfile.open(plain, 'w', format=tarfile.PAX_FORMAT) as tar:
+            for path in sorted(stage.rglob('*')):
+                entry = tar.gettarinfo(str(path), str(path.relative_to(stage)))
+                entry.uid = entry.gid = 0
+                entry.uname = entry.gname = 'root'
+                entry.mtime = epoch
+                if path.is_file():
+                    with path.open('rb') as handle:
+                        tar.addfile(entry, handle)
+                else:
+                    tar.addfile(entry)
+        run('zstd', '-q', '-T1', '-19', plain, '-o', candidate / name)
+        manifest = {'schema': 'router-package-candidate-v1', 'package': name,
+                    'sha256': digest(candidate / name), 'name': 'router-prefix', 'version': version,
+                    'architecture': 'x86_64', 'abi': abi, 'target': 'x86_64-qemu-uefi-preview',
+                    'source_kind': 'internal', 'source_revision': revision,
+                    'source_archive': archive.name, 'source_sha256': digest(archive),
+                    'recipe_sha256': digest(source / 'network/router-prefix/recipe'),
+                    'builder_sha256': digest(Path(__file__).resolve()),
+                    'toolchain': toolchain, 'dependencies': dependencies, 'license': 'NOASSERTION',
+                    'public_release_authorized': False, 'runtime_verified': False,
+                    'dependency_closure_verified': False}
+        (candidate / 'candidate.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+        os.rename(candidate, output)
+    print(output)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--source', type=Path, required=True)
+    p.add_argument('--output', type=Path, required=True)
+    p.add_argument('--development-host', action='store_true', help='unlocked glibc test candidate; never musl or stable')
+    p.add_argument('--upstream', type=Path)
+    p.add_argument('--cache', type=Path)
+    args = p.parse_args()
+    if args.development_host == bool(args.upstream or args.cache):
+        p.error('choose --development-host OR --upstream and --cache')
+    if not args.development_host and not (args.upstream and args.cache):
+        p.error('--upstream and --cache are both required')
+    try:
+        build(args)
+    except Exception as exc:  # Includes the shared verifier's Refusal type; CLI fails closed.
+        p.exit(2, f'REFUSED: {exc}\n')
+
+
+if __name__ == '__main__':
+    main()

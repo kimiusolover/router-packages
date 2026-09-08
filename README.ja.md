@@ -15,3 +15,7 @@ AX23V 向けには汎用の `build-%` を使わず、`build-ax23v-<package>` を
 MIPS toolchain record、kernel/source/ABI の locked 条件を通過した場合だけレシピを起動します。
 現時点では AX23V target と toolchain が `pending-verification` のため、入口は安全に拒否します。
 image、flash、RF 送信はこの入口の責務外であり、許可しません。
+
+## previewパッケージ化
+
+固定内製ソースからのpacman互換パッケージ生成は [手順と実装境界](packaging/preview-package.ja.md) を参照してください。

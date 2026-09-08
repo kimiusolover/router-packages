@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Exercise the real builder against a disposable, fixed source commit."""
+import hashlib
+import json
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+BUILDER = ROOT / 'packaging/build-preview-package'
+
+
+class PreviewPackageTest(unittest.TestCase):
+    def test_fixed_source_build_and_refusals(self):
+        with tempfile.TemporaryDirectory(prefix='router-package-test-') as tmp:
+            base = Path(tmp)
+            source = base / 'source'
+            source.mkdir()
+            import shutil
+            shutil.copytree(ROOT / 'network/router-prefix', source / 'network/router-prefix')
+            def git(*args):
+                return subprocess.check_output(['git', '-C', str(source), *args], stderr=subprocess.PIPE)
+            git('init', '-q')
+            git('add', 'network/router-prefix')
+            git('-c', 'user.name=Test fixture', '-c', 'user.email=test@example.invalid',
+                '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixed test source')
+            def build(out, *extra):
+                return subprocess.run(['python3', str(BUILDER), '--source', str(source),
+                                       '--output', str(out), *extra], capture_output=True, text=True)
+            first = base / 'first'
+            result = build(first, '--development-host')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            second = base / 'second'
+            result = build(second, '--development-host')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            a = json.loads((first / 'candidate.json').read_text())
+            b = json.loads((second / 'candidate.json').read_text())
+            self.assertEqual(a, b)
+            self.assertEqual(a['source_revision'], git('rev-parse', 'HEAD').decode().strip())
+            self.assertEqual(a['abi'], 'x86_64-glibc-development')
+            self.assertFalse(a['public_release_authorized'])
+            binary = base / 'generator'
+            binary.write_bytes(subprocess.check_output(['bsdtar', '-xOf', str(first / a['package']),
+                                                         'usr/lib/routeros/prefix-generator']))
+            binary.chmod(0o755)
+            prefix = subprocess.check_output([str(binary)]).decode().strip()
+            self.assertRegex(prefix, r'^fd[0-9a-f]{2}:[0-9a-f]{4}:[0-9a-f]{4}::/48$')
+            result = build(first, '--development-host')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('already exists', result.stderr)
+            (source / 'untracked').write_text('dirty')
+            result = build(base / 'dirty', '--development-host')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('clean', result.stderr)
+            self.assertFalse((base / 'dirty').exists())
+            (source / 'untracked').unlink()
+            result = build(base / 'missing')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((base / 'missing').exists())
+
+
+if __name__ == '__main__':
+    unittest.main()
