@@ -20,3 +20,7 @@ build-%:
 
 build-ax23v-%:
 	./packaging/build-ax23v-package "$*"
+
+.PHONY: test-preview-package
+test-preview-package:
+	python3 ./packaging/test-preview-package

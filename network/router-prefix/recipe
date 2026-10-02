@@ -2,7 +2,7 @@
 source_kind=internal
 
 build() {
-  cc -O2 -Wall -Wextra -Werror "$SOURCE_ROOT/prefix-generator.c" -o "$BUILD_DIR/router-prefix-generator"
+  "${CC:-cc}" -O2 -Wall -Wextra -Werror "$SOURCE_ROOT/prefix-generator.c" -o "$BUILD_DIR/router-prefix-generator"
   install -Dm755 "$BUILD_DIR/router-prefix-generator" "$DESTDIR/usr/lib/routeros/prefix-generator"
   for program in prefix-manager prefix-apply; do
     install -Dm755 "$SOURCE_ROOT/$program" "$DESTDIR/usr/lib/routeros/$program"

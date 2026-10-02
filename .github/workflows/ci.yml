@@ -15,3 +15,8 @@ jobs:
       - uses: actions/checkout@v6
       - name: Validate package plans and locked inputs
         run: make check
+      - name: Verify real preview package builds
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libarchive-tools zstd binutils gcc
+          make test-preview-package
