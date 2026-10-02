@@ -4,25 +4,35 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 files="$root/network/router-nic-discovery/files"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$tmp/sys/enpX" "$tmp/sys/ethY" "$tmp/run" "$tmp/bin"
-: >"$tmp/sys/enpX/device"; : >"$tmp/sys/ethY/device"
-cat >"$tmp/bin/udevadm" <<'EOF'
+mkdir -p "$tmp/sys/enpX" "$tmp/sys/ethY" "$tmp/sys/wlanZ" "$tmp/run" "$tmp/bin"
+: >"$tmp/sys/enpX/device"; : >"$tmp/sys/ethY/device"; : >"$tmp/sys/wlanZ/device"
+mkdir "$tmp/sys/wlanZ/wireless"
+cat >"$tmp/bin/udevadm" <<'MOCK'
 #!/usr/bin/env bash
 case ${3##*/} in
-  enpX) printf 'ID_PATH=pci-0000:02:00.0\nID_NET_DRIVER=r8169\n' ;;
-  ethY) printf 'ID_PATH=pci-0000:03:00.0\nID_NET_DRIVER=igc\n' ;;
+  enpX) printf 'ID_PATH=pci-0000:02:00.0\nID_NET_DRIVER=r8169\nID_VENDOR_ID=0x10ec\nID_MODEL_ID=0x8125\n' ;;
+  ethY) printf 'ID_PATH=pci-0000:04:00.0\nID_NET_DRIVER=igc\nID_VENDOR_ID=0x8086\nID_MODEL_ID=0x125c\n' ;;
+  wlanZ) printf 'ID_PATH=pci-0000:03:00.0\nID_NET_DRIVER=iwlwifi\nID_VENDOR_ID=0x8086\nID_MODEL_ID=0x2725\n' ;;
 esac
-EOF
+MOCK
 chmod +x "$tmp/bin/udevadm"
-printf '[WAN]\nPath=pci-0000:02:00.0\n[LAN]\nPaths=pci-0000:03:00.0\n' >"$tmp/config"
-env PATH="$tmp/bin:$PATH" ROUTER_NIC_DISCOVERY_CONFIG="$tmp/config" ROUTER_NIC_DISCOVERY_RUN="$tmp/run" ROUTER_NIC_DISCOVERY_SYS_CLASS_NET="$tmp/sys" "$files/nic-discovery"
-grep -qx 'Device=wan,pci-0000:02:00.0,enpX,r8169' "$tmp/run/nic-discovery.conf"
-grep -qx 'Device=lan,pci-0000:03:00.0,ethY,igc' "$tmp/run/nic-discovery.conf"
-printf '[WAN]\nPath=\n[LAN]\nPaths=\n' >"$tmp/config"
-env PATH="$tmp/bin:$PATH" ROUTER_NIC_DISCOVERY_CONFIG="$tmp/config" ROUTER_NIC_DISCOVERY_RUN="$tmp/run" ROUTER_NIC_DISCOVERY_SYS_CLASS_NET="$tmp/sys" "$files/nic-discovery"
-grep -qx 'Device=unassigned,pci-0000:02:00.0,enpX,r8169' "$tmp/run/nic-discovery.conf"
-printf '[WAN]\nPath=pci-0000:04:00.0\n[LAN]\nPaths=\n' >"$tmp/config"
-if env PATH="$tmp/bin:$PATH" ROUTER_NIC_DISCOVERY_CONFIG="$tmp/config" ROUTER_NIC_DISCOVERY_RUN="$tmp/run" ROUTER_NIC_DISCOVERY_SYS_CLASS_NET="$tmp/sys" "$files/nic-discovery"; then
-  echo 'missing configured PCI path was accepted' >&2; exit 1
-fi
-echo 'router-nic-discovery role mapping and fail-closed checks are valid'
+printf '[Discovery]\nEthernetOnly=yes\nExcludeWireless=yes\nAllowVlanLan=yes\n' >"$tmp/config"
+run_discovery() {
+  env PATH="$tmp/bin:$PATH" ROUTER_NIC_DISCOVERY_CONFIG="$tmp/config" ROUTER_NIC_DISCOVERY_RUN="$tmp/run" ROUTER_NIC_DISCOVERY_SYS_CLASS_NET="$tmp/sys" "$files/nic-discovery"
+}
+# One Ethernet interface: the discovered PCI path becomes WAN and VLAN LAN parent.
+mv "$tmp/sys/ethY" "$tmp/ethY.disabled"
+run_discovery
+grep -qx 'Path=pci-0000:02:00.0' "$tmp/run/nic-discovery.conf"
+grep -qx 'Interface=enpX' "$tmp/run/nic-discovery.conf"
+grep -qx 'Mode=vlan' "$tmp/run/nic-discovery.conf"
+grep -qx 'ParentInterface=enpX' "$tmp/run/nic-discovery.conf"
+grep -q '^Device=wan-lan-parent,pci-0000:02:00.0,enpX,r8169,10ec,8125,ethernet$' "$tmp/run/nic-discovery.conf"
+! grep -q 'wlanZ' "$tmp/run/nic-discovery.conf"
+# Multiple Ethernet interfaces: never assign roles based on enumeration or PCI order.
+mv "$tmp/ethY.disabled" "$tmp/sys/ethY"
+run_discovery
+grep -qx 'Device=unassigned,pci-0000:02:00.0,enpX,r8169,10ec,8125,ethernet' "$tmp/run/nic-discovery.conf"
+grep -qx 'Device=unassigned,pci-0000:04:00.0,ethY,igc,8086,125c,ethernet' "$tmp/run/nic-discovery.conf"
+grep -qx 'Role=unassigned' <(sed -n '/^\[WAN\]/,/^$/p' "$tmp/run/nic-discovery.conf")
+echo 'router-nic-discovery inventory and conservative role resolution are valid'
