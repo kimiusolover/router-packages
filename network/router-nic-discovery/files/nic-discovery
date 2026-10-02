@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+shopt -s extglob nullglob
+readonly config=${ROUTER_NIC_DISCOVERY_CONFIG:-/etc/routeros/nic-discovery.conf}
+readonly run_dir=${ROUTER_NIC_DISCOVERY_RUN:-/run/routeros}
+readonly sys_class_net=${ROUTER_NIC_DISCOVERY_SYS_CLASS_NET:-/sys/class/net}
+fail() { printf 'router-nic-discovery: %s\n' "$*" >&2; exit 1; }
+[[ -d $sys_class_net ]] || fail "network device directory not found: $sys_class_net"
+mkdir -p "$run_dir"
+declare -a wan_paths=() lan_paths=()
+if [[ -r $config ]]; then
+  section=
+  while IFS= read -r line || [[ -n $line ]]; do
+    line=${line%%#*}; line=${line%%;*}
+    line=${line##+([[:space:]])}; line=${line%%+([[:space:]])}
+    [[ -z $line ]] && continue
+    if [[ $line =~ ^\[([A-Za-z]+)\]$ ]]; then section=${BASH_REMATCH[1]}; continue; fi
+    [[ $line == *=* ]] || fail "invalid configuration line: $line"
+    key=${line%%=*}; value=${line#*=}; key=${key//[[:space:]]/}; value=${value//[[:space:]]/}
+    case "$section:$key" in
+      WAN:Path)
+        [[ -z $value ]] && continue
+        [[ ${wan_seen:-0} == 0 ]] || fail 'WAN Path may be set only once'
+        wan_seen=1; wan_paths+=("$value")
+        ;;
+      LAN:Paths)
+        [[ ${lan_seen:-0} == 0 ]] || fail 'LAN Paths may be set only once'
+        lan_seen=1
+        if [[ -n $value ]]; then
+          IFS=, read -r -a parsed_lan_paths <<<"$value"
+          for path in "${parsed_lan_paths[@]}"; do
+            [[ -n $path ]] || fail 'LAN Paths contains an empty entry'
+            lan_paths+=("$path")
+          done
+        fi
+        ;;
+      *) fail "unsupported setting: [$section] $key" ;;
+    esac
+  done <"$config"
+fi
+declare -A seen_config=()
+for path in "${wan_paths[@]}" "${lan_paths[@]}"; do
+  [[ $path =~ ^pci-[[:alnum:]_.:-]+$ ]] || fail "invalid PCI ID_PATH: $path"
+  [[ -z ${seen_config[$path]+present} ]] || fail "PCI path assigned more than once: $path"
+  seen_config[$path]=1
+done
+declare -A seen_device=()
+declare -a devices=()
+for sys in "$sys_class_net"/*; do
+  name=${sys##*/}; [[ $name == lo || ! -e $sys/device ]] && continue
+  props=$(udevadm info --query=property --path="$sys") || fail "udevadm failed for $name"
+  path=$(sed -n 's/^ID_PATH=//p' <<<"$props" | head -n1)
+  driver=$(sed -n 's/^ID_NET_DRIVER=//p' <<<"$props" | head -n1)
+  [[ -n $path && $path =~ ^pci-[[:alnum:]_.:-]+$ ]] || continue
+  [[ -z ${seen_device[$path]+present} ]] || fail "duplicate PCI path detected: $path"
+  seen_device[$path]=1
+  devices+=("$path|$name|${driver:-unknown}")
+done
+declare -A found=()
+for record in "${devices[@]}"; do IFS='|' read -r path name driver <<<"$record"; found[$path]=$name; done
+for path in "${wan_paths[@]}" "${lan_paths[@]}"; do
+  [[ -n ${found[$path]+present} ]] || fail "configured PCI path not found: $path"
+done
+tmp=$(mktemp -d "$run_dir/.nic-discovery.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+{
+  echo '[Discovery]'; echo 'Version=1'
+  for record in "${devices[@]}"; do
+    IFS='|' read -r path name driver <<<"$record"; role=unassigned
+    for configured in "${wan_paths[@]}"; do [[ $configured == "$path" ]] && role=wan; done
+    for configured in "${lan_paths[@]}"; do [[ $configured == "$path" ]] && role=lan; done
+    printf 'Device=%s,%s,%s,%s\n' "$role" "$path" "$name" "$driver"
+  done
+} >"$tmp/devices"
+chmod 0644 "$tmp/devices"
+mv -f "$tmp/devices" "$run_dir/nic-discovery.conf"
