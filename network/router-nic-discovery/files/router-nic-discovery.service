@@ -1,7 +1,7 @@
 [Unit]
 Description=Discover physical Ethernet devices for RouterOS
 DefaultDependencies=no
-After=systemd-udevd.service
+After=systemd-udevd.service systemd-tmpfiles-setup.service
 Before=network-pre.target router-network-ready.target
 Wants=network-pre.target
 
