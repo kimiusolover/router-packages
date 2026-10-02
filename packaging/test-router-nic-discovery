@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+files="$root/network/router-nic-discovery/files"
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/sys/enpX" "$tmp/sys/ethY" "$tmp/run" "$tmp/bin"
+: >"$tmp/sys/enpX/device"; : >"$tmp/sys/ethY/device"
+cat >"$tmp/bin/udevadm" <<'EOF'
+#!/usr/bin/env bash
+case ${3##*/} in
+  enpX) printf 'ID_PATH=pci-0000:02:00.0\nID_NET_DRIVER=r8169\n' ;;
+  ethY) printf 'ID_PATH=pci-0000:03:00.0\nID_NET_DRIVER=igc\n' ;;
+esac
+EOF
+chmod +x "$tmp/bin/udevadm"
+printf '[WAN]\nPath=pci-0000:02:00.0\n[LAN]\nPaths=pci-0000:03:00.0\n' >"$tmp/config"
+env PATH="$tmp/bin:$PATH" ROUTER_NIC_DISCOVERY_CONFIG="$tmp/config" ROUTER_NIC_DISCOVERY_RUN="$tmp/run" ROUTER_NIC_DISCOVERY_SYS_CLASS_NET="$tmp/sys" "$files/nic-discovery"
+grep -qx 'Device=wan,pci-0000:02:00.0,enpX,r8169' "$tmp/run/nic-discovery.conf"
+grep -qx 'Device=lan,pci-0000:03:00.0,ethY,igc' "$tmp/run/nic-discovery.conf"
+printf '[WAN]\nPath=\n[LAN]\nPaths=\n' >"$tmp/config"
+env PATH="$tmp/bin:$PATH" ROUTER_NIC_DISCOVERY_CONFIG="$tmp/config" ROUTER_NIC_DISCOVERY_RUN="$tmp/run" ROUTER_NIC_DISCOVERY_SYS_CLASS_NET="$tmp/sys" "$files/nic-discovery"
+grep -qx 'Device=unassigned,pci-0000:02:00.0,enpX,r8169' "$tmp/run/nic-discovery.conf"
+printf '[WAN]\nPath=pci-0000:04:00.0\n[LAN]\nPaths=\n' >"$tmp/config"
+if env PATH="$tmp/bin:$PATH" ROUTER_NIC_DISCOVERY_CONFIG="$tmp/config" ROUTER_NIC_DISCOVERY_RUN="$tmp/run" ROUTER_NIC_DISCOVERY_SYS_CLASS_NET="$tmp/sys" "$files/nic-discovery"; then
+  echo 'missing configured PCI path was accepted' >&2; exit 1
+fi
+echo 'router-nic-discovery role mapping and fail-closed checks are valid'

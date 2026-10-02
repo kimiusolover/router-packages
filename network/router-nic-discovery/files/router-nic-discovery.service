@@ -1,0 +1,14 @@
+[Unit]
+Description=Discover physical Ethernet devices for RouterOS
+DefaultDependencies=no
+After=systemd-udevd.service
+Before=network-pre.target router-network-ready.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/routeros/nic-discovery
+RemainAfterExit=yes
+
+[Install]
+WantedBy=network-pre.target

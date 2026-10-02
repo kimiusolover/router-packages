@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+source_kind=internal
+
+build() {
+  install -Dm755 "$SOURCE_ROOT/nic-discovery" "$DESTDIR/usr/lib/routeros/nic-discovery"
+  install -Dm644 "$SOURCE_ROOT/router-nic-discovery.service" "$DESTDIR/usr/lib/systemd/system/router-nic-discovery.service"
+  install -Dm644 "$SOURCE_ROOT/nic-discovery.conf" "$DESTDIR/usr/lib/routeros/nic-discovery.conf"
+  install -Dm644 "$SOURCE_ROOT/router-nic-discovery.tmpfiles.conf" "$DESTDIR/usr/lib/tmpfiles.d/router-nic-discovery.conf"
+  install -d "$DESTDIR/usr/share/routeros/provenance"
+  printf '{"component":"router-nic-discovery","source":"router-packages","revision":"%s"}\n' \
+    "$ROUTER_PACKAGES_REVISION" >"$DESTDIR/usr/share/routeros/provenance/router-nic-discovery-build.json"
+}

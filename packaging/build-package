@@ -12,7 +12,7 @@ package=$1
 root=$(cd "$(dirname "$0")/.." && pwd)
 case "$package" in
   systemd) recipe="$root/core/systemd/recipe" ;;
-  hostapd|kea|unbound|nftables|jool|router-prefix) recipe="$root/network/$package/recipe" ;;
+  hostapd|kea|unbound|nftables|jool|router-prefix|router-nic-discovery) recipe="$root/network/$package/recipe" ;;
   *) echo "unknown package: $package" >&2; exit 64 ;;
 esac
 
