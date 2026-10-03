@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly discovery=${ROUTER_NETWORK_DISCOVERY:-/run/routeros/nic-discovery.conf}
+readonly config=${ROUTER_NETWORK_CONFIG:-/etc/routeros/network.conf}
+readonly default_config=/usr/lib/routeros/network.conf
+readonly run_dir=${ROUTER_NETWORK_RUN:-/run/systemd/network}
+readonly state_dir=${ROUTER_NETWORK_STATE:-/run/routeros/network}
+readonly reload=${ROUTER_NETWORK_RELOAD:-yes}
+
+fail() { printf 'router-network: %s\n' "$*" >&2; exit 1; }
+
+[ "${1:-}" = apply ] || { echo "usage: router-network apply" >&2; exit 64; }
+
+[[ -r $discovery ]] || fail "NIC discovery result not found: $discovery"
+
+config_file=$config
+if [[ ! -r $config_file ]]; then
+  config_file=$default_config
+fi
+[[ -r $config_file ]] || fail "network configuration not found: $config"
+
+section_value() { # <file> <section> <key>
+  awk -v section="$2" -v key="$3" '
+    $0 == "[" section "]" { active = 1; next }
+    /^\[/ { active = 0 }
+    active && $0 ~ ("^" key "=") {
+      sub("^[^=]*=", "")
+      print
+      exit
+    }
+  ' "$1"
+}
+
+wan_role=$(section_value "$discovery" WAN Role)
+wan_if=$(section_value "$discovery" WAN Interface)
+wan_path=$(section_value "$discovery" WAN Path)
+
+[[ $wan_role == wan ]] || fail "WAN is unassigned"
+[[ -n $wan_if ]] || fail "WAN interface is missing"
+[[ -n $wan_path ]] || fail "WAN path is missing"
+
+printf 'router-network: WAN=%s path=%s\n' "$wan_if" "$wan_path"
+
+vlan_ids=$(awk '
+  $0 == "[Network]" { active = 1; next }
+  /^\[/ { active = 0 }
+  active && /^VLANs=/ {
+    sub(/^VLANs=/, "")
+    gsub(/[[:space:]]/, "")
+    gsub(/,/, "\n")
+    print
+  }
+' "$config_file")
+
+[[ -n $vlan_ids ]] || fail "no VLANs configured in $config_file"
+
+mkdir -p "$run_dir" "$state_dir"
+tmp=$(mktemp -d "$run_dir/.router-network.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+
+wan_network=$tmp/10-routeros-wan.network
+{
+  echo '[Match]'
+  echo "Name=$wan_if"
+  echo
+  echo '[Network]'
+  echo 'IPv6AcceptRA=yes'
+  echo 'IPv6Forwarding=yes'
+  echo 'LinkLocalAddressing=ipv6'
+} >"$wan_network"
+
+declare -a generated=("10-routeros-wan.network")
+: >"$tmp/state-files"
+
+while IFS= read -r vid; do
+  [[ -n $vid ]] || continue
+  case $vid in
+    *[!0-9]*) fail "invalid VLAN ID: $vid" ;;
+  esac
+  ((vid >= 1 && vid <= 4094)) || fail "VLAN ID out of range: $vid"
+
+  name=$(section_value "$config_file" "VLAN:$vid" Name)
+  if [[ -z $name ]]; then
+    case $vid in
+      10) name=lan ;;
+      20) name=guest ;;
+      30) name=iot ;;
+      *)  name="vlan$vid" ;;
+    esac
+  fi
+  [[ $name =~ ^[a-z][a-z0-9-]*$ && ${#name} -le 15 ]] ||
+    fail "invalid interface name for VLAN $vid: $name"
+
+  address=$(section_value "$config_file" "VLAN:$vid" Address)
+
+  # ベース名は prefix-apply が生成する 20-routeros-<name>.network.d の
+  # drop-in 対象と一致させる
+  cat >"$tmp/20-routeros-$name.netdev" <<EOF
+[NetDev]
+Name=$name
+Kind=vlan
+
+[VLAN]
+Id=$vid
+EOF
+
+  {
+    echo '[Match]'
+    echo "Name=$name"
+    echo
+    echo '[Network]'
+    [[ -n $address ]] && echo "Address=$address"
+    echo 'IPv6Forwarding=yes'
+    echo 'LinkLocalAddressing=ipv6'
+  } >"$tmp/20-routeros-$name.network"
+
+  {
+    echo "Interface=$name"
+    echo "VLANID=$vid"
+    echo "Parent=$wan_if"
+    [[ -n $address ]] && echo "Address=$address"
+  } >"$tmp/state-$name"
+
+  echo "VLAN=$name" >>"$wan_network"
+
+  generated+=("20-routeros-$name.netdev" "20-routeros-$name.network")
+  printf '%s\n' "$name" >>"$tmp/state-files"
+  printf 'router-network: VLAN %s -> %s%s\n' "$vid" "$name" "${address:+ address=$address}"
+done <<<"$vlan_ids"
+
+# 以前に生成した管理ファイルを削除してから新しいファイルを配置する
+if [[ -r $state_dir/generated ]]; then
+  while IFS= read -r old; do
+    [[ $old =~ ^(10-routeros-wan\.network|20-routeros-[a-z][a-z0-9-]*\.(netdev|network))$ ]] ||
+      fail "invalid managed file recorded: $old"
+    rm -f "$run_dir/$old"
+  done <"$state_dir/generated"
+fi
+if [[ -r $state_dir/interfaces ]]; then
+  while IFS= read -r old_if; do
+    [[ $old_if =~ ^[a-z][a-z0-9-]*$ ]] || fail "invalid recorded interface: $old_if"
+    rm -f "$state_dir/$old_if"
+  done <"$state_dir/interfaces"
+fi
+
+for file in "${generated[@]}"; do
+  chmod 0644 "$tmp/$file"
+  mv -f "$tmp/$file" "$run_dir/$file"
+done
+printf '%s\n' "${generated[@]}" >"$tmp/generated"
+while IFS= read -r name; do
+  mv -f "$tmp/state-$name" "$state_dir/$name"
+done <"$tmp/state-files"
+mv -f "$tmp/state-files" "$state_dir/interfaces"
+mv -f "$tmp/generated" "$state_dir/generated"
+
+rm -rf "$tmp"
+trap - EXIT
+
+if [[ $reload == yes ]]; then
+  networkctl reload
+fi
+
+echo 'router-network: configured'

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+source_kind=internal
+
+build() {
+  install -Dm755 "$SOURCE_ROOT/router-network" "$DESTDIR/usr/lib/routeros/router-network"
+  install -Dm644 "$SOURCE_ROOT/router-network.service" "$DESTDIR/usr/lib/systemd/system/router-network.service"
+  install -Dm644 "$SOURCE_ROOT/router-network.conf" "$DESTDIR/usr/lib/routeros/network.conf"
+  install -Dm644 "$SOURCE_ROOT/router-network.tmpfiles.conf" "$DESTDIR/usr/lib/tmpfiles.d/router-network.conf"
+  install -d "$DESTDIR/usr/share/routeros/provenance"
+  printf '{"component":"router-network","source":"router-packages","revision":"%s"}\n' \
+    "$ROUTER_PACKAGES_REVISION" >"$DESTDIR/usr/share/routeros/provenance/router-network-build.json"
+}
