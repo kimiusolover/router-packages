@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch DHCPv6-PD delegated file (create/change/delete)
+After=prefix-manager.service
+RequiresMountsFor=/run
+
+[Path]
+PathChanged=/run/routeros/prefix/delegated
+PathModified=/run/routeros/prefix/delegated
+Unit=router-prefix-refresh.service
+
+[Install]
+WantedBy=multi-user.target

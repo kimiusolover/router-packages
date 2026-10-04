@@ -1,0 +1,14 @@
+[Unit]
+Description=RouterOS IPv6 Prefix Refresh (PD create/change/delete)
+After=prefix-manager.service
+# Soft: must work after boot oneshot has already exited
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/routeros/prefix-manager ensure
+ExecStart=/usr/lib/routeros/prefix-apply apply
+# Chain NAT consumer after registry update
+ExecStartPost=/bin/systemctl start --no-block router-ipv6-nat-refresh.service
+
+[Install]
+# Driven by router-prefix-delegated.path

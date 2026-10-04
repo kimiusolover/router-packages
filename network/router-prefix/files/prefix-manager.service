@@ -3,6 +3,8 @@ Description=RouterOS IPv6 Prefix Manager
 Wants=network-online.target
 After=network-online.target
 Before=router-network-ready.target
+# PD lifecycle watcher
+Wants=router-prefix-delegated.path
 
 [Service]
 Type=oneshot
