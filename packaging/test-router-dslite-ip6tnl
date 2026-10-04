@@ -16,6 +16,8 @@ case "$*" in
   "link set dev ds-lite up") exit 0 ;;
   "addr replace 192.0.0.2/29 dev ds-lite") exit 0 ;;
   "link set dev ds-lite mtu 1460") exit 0 ;;
+  "-4 route add default dev ds-lite metric 50") [ "${ROUTER_DSLITE_FAIL_ROUTE:-0}" = 1 ] && exit 1 || exit 0 ;;
+  "-4 route del default dev ds-lite metric 50") exit 0 ;;
   *) echo "unexpected ip invocation: $*" >&2; exit 1 ;;
 esac
 MOCK
@@ -33,17 +35,26 @@ EOF_CONF
 export ROUTER_DSLITE_IP_LOG="$tmp/ip.log"
 env=(env PATH="$tmp/bin:$PATH" ROUTER_DSLITE_LIB="$tmp/lib" ROUTER_DSLITE_ETC="$tmp/etc" ROUTER_DSLITE_RUN="$tmp/run" ROUTER_DSLITE_CONFIG="$tmp/etc/router-dslite.conf")
 "${env[@]}" "$files/router-dslite" apply >/dev/null 2>&1
-grep -qx 'State=ip6tnl-ready' "$tmp/run/state"
+grep -qx 'State=ready' "$tmp/run/state"
 grep -qx 'Backend=ip6tnl' "$tmp/run/state"
 grep -qx 'B4Address=192.0.0.2/29' "$tmp/run/state"
 grep -qx 'MTU=1460' "$tmp/run/state"
-grep -qx 'IPv4DefaultRoute=not-configured' "$tmp/run/state"
+grep -qx 'IPv4DefaultRoute=configured' "$tmp/run/state"
+grep -qx 'IPv4RouteMetric=50' "$tmp/run/state"
 grep -qx 'AFTR=2001:db8:100::20' "$tmp/run/state"
 grep -Fqx -- '-6 tunnel add ds-lite mode ipip6 remote 2001:db8:100::20 local 2001:db8:1::2 dev wan' "$tmp/ip.log"
 grep -Fqx -- 'addr replace 192.0.0.2/29 dev ds-lite' "$tmp/ip.log"
 grep -Fqx -- 'link set dev ds-lite mtu 1460' "$tmp/ip.log"
-! grep -q 'route.*default' "$tmp/ip.log"
+grep -Fqx -- '-4 route add default dev ds-lite metric 50' "$tmp/ip.log"
 "${env[@]}" "$files/router-dslite" stop >/dev/null 2>&1
+grep -Fqx -- '-4 route del default dev ds-lite metric 50' "$tmp/ip.log"
 grep -Fqx -- '-6 tunnel del ds-lite' "$tmp/ip.log"
 test ! -e "$tmp/run/state"
-echo 'router-dslite ip6tnl creates B4 tunnel state without installing an IPv4 default route'
+# Route installation failure must remove the tunnel and leave no stale state.
+export ROUTER_DSLITE_FAIL_ROUTE=1
+if "${env[@]}" "$files/router-dslite" apply >/dev/null 2>&1; then
+  echo 'ip6tnl accepted a failed IPv4 route installation' >&2; exit 1
+fi
+test ! -e "$tmp/run/state"
+grep -Fqx -- '-6 tunnel del ds-lite' "$tmp/ip.log"
+echo 'router-dslite ip6tnl creates B4 tunnel state and installs a metric-scoped IPv4 default route'
