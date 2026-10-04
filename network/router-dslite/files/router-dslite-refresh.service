@@ -1,0 +1,12 @@
+[Unit]
+Description=RouterOS DS-Lite Refresh
+After=router-network.service network-online.target
+# Re-apply after WAN IPv6 address or default route changes.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/routeros/router-dslite apply
+
+[Install]
+# Wire from path units or networkd dispatcher when WAN GUA changes.
+WantedBy=multi-user.target

@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# DS-Lite control: validate WAN IPv6 + AFTR, optionally bring up tunnel.
+# Backend=stub only records readiness; ip6tnl/jool fill in later.
+set -euo pipefail
+
+lib=${ROUTER_DSLITE_LIB:-/usr/lib/routeros}
+etc=${ROUTER_DSLITE_ETC:-/etc/routeros}
+run=${ROUTER_DSLITE_RUN:-/run/routeros/dslite}
+config=${ROUTER_DSLITE_CONFIG:-$etc/router-dslite.conf}
+[ -r "$config" ] || config=$lib/router-dslite.conf
+
+value() { sed -n "s/^$1=//p" "$2" 2>/dev/null | tail -n1; }
+conf() { value "$1" "$config" || true; }
+
+state_file=$run/state
+status_file=$run/status
+
+enabled=$(conf Enabled); enabled=${enabled:-yes}
+wan=$(conf WAN); wan=${wan:-enp2s0}
+aftr=$(conf AFTR); aftr=${aftr:-}
+local_addr=$(conf LocalAddress); local_addr=${local_addr:-}
+tun=$(conf TunnelInterface); tun=${tun:-ds-lite}
+backend=$(conf Backend); backend=${backend:-stub}
+ipv4_default=$(conf IPv4DefaultRoute); ipv4_default=${ipv4_default:-yes}
+mtu=$(conf MTU); mtu=${mtu:-}
+mss=$(conf MSSClamp); mss=${mss:-}
+
+write_status() {
+  mkdir -p "$run"
+  umask 077
+  {
+    echo "Enabled=$enabled"
+    echo "WAN=$wan"
+    echo "AFTR=$aftr"
+    echo "LocalAddress=${local_addr:-}"
+    echo "TunnelInterface=$tun"
+    echo "Backend=$backend"
+    echo "Ready=$1"
+    echo "Message=$2"
+    echo "Updated=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+  } >"$status_file.new.$$"
+  mv -f "$status_file.new.$$" "$status_file"
+}
+
+# Pick a global unicast IPv6 on WAN (exclude link-local / ULA).
+primary_wan_gua() {
+  local iface=$1
+  ip -6 -o addr show dev "$iface" scope global 2>/dev/null \
+    | awk '
+      {
+        split($4, a, "/")
+        addr = a[1]
+        if (addr ~ /^fe80:/) next
+        if (addr ~ /^fd/ || addr ~ /^fc/) next
+        print addr
+        exit
+      }'
+}
+
+wan_ipv6_ok() {
+  local iface=$1
+  ip link show dev "$iface" >/dev/null 2>&1 || return 1
+  # Carrier or at least admin up
+  ip -br link show dev "$iface" 2>/dev/null | grep -q 'UP' || return 1
+  local gua
+  gua=$(primary_wan_gua "$iface")
+  [ -n "$gua" ]
+}
+
+aftr_configured() {
+  [ -n "$aftr" ] && [ "$aftr" != "unset" ]
+}
+
+check_prereqs() {
+  if [ "$enabled" != yes ]; then
+    write_status no "disabled in config"
+    echo "DS-Lite disabled in config" >&2
+    return 1
+  fi
+  if ! wan_ipv6_ok "$wan"; then
+    write_status no "WAN $wan has no global IPv6 address"
+    echo "WAN $wan: need interface UP with GUA (RA)" >&2
+    return 1
+  fi
+  if ! aftr_configured; then
+    write_status no "AFTR not set in config"
+    echo "AFTR is empty; set AFTR= in $config (ISP DS-Lite endpoint)" >&2
+    return 1
+  fi
+  if [ -z "$local_addr" ]; then
+    local_addr=$(primary_wan_gua "$wan")
+  fi
+  write_status yes "prerequisites ok (backend=$backend)"
+  return 0
+}
+
+apply_stub() {
+  # Skeleton only: no tunnel, no IPv4 default. Records readiness for later backends.
+  mkdir -p "$run"
+  umask 077
+  {
+    echo "State=stub-ready"
+    echo "WAN=$wan"
+    echo "AFTR=$aftr"
+    echo "LocalAddress=$local_addr"
+    echo "TunnelInterface=$tun"
+    echo "Backend=stub"
+    echo "IPv4DefaultRoute=$ipv4_default"
+    echo "MTU=${mtu:-}"
+    echo "MSSClamp=${mss:-}"
+    echo "Note=tunnel not created; set Backend=ip6tnl or jool after AFTR confirmed"
+  } >"$state_file.new.$$"
+  mv -f "$state_file.new.$$" "$state_file"
+  echo "DS-Lite stub ready: WAN=$wan AFTR=$aftr Local=$local_addr (no tunnel yet)" >&2
+}
+
+apply_ip6tnl() {
+  echo "Backend=ip6tnl is not implemented in this skeleton" >&2
+  write_status no "ip6tnl backend not implemented"
+  return 1
+}
+
+apply_jool() {
+  echo "Backend=jool is not implemented in this skeleton" >&2
+  write_status no "jool backend not implemented"
+  return 1
+}
+
+apply() {
+  check_prereqs || return 1
+  case "$backend" in
+    stub) apply_stub ;;
+    ip6tnl) apply_ip6tnl ;;
+    jool) apply_jool ;;
+    *)
+      echo "unknown Backend=$backend (use stub|ip6tnl|jool)" >&2
+      write_status no "unknown backend"
+      return 1
+      ;;
+  esac
+}
+
+stop() {
+  # Future: tear down tunnel and IPv4 default. Stub only clears state.
+  rm -f "$state_file"
+  write_status no "stopped"
+  echo "DS-Lite stopped (stub; no tunnel to remove)" >&2
+}
+
+status() {
+  if [ -r "$status_file" ]; then
+    cat "$status_file"
+  else
+    echo "Ready=unknown"
+    echo "Message=no status yet; run apply"
+  fi
+  if [ -r "$state_file" ]; then
+    echo "---"
+    cat "$state_file"
+  fi
+}
+
+case ${1:-} in
+  apply|ensure) apply ;;
+  stop|flush) stop ;;
+  status|check)
+    if check_prereqs; then
+      status
+      exit 0
+    else
+      status
+      exit 1
+    fi
+    ;;
+  *)
+    echo "usage: router-dslite {apply|ensure|stop|flush|status|check}" >&2
+    exit 64
+    ;;
+esac
