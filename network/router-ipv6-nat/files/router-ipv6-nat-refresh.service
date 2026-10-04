@@ -1,0 +1,10 @@
+[Unit]
+Description=RouterOS IPv6 NAT66 Refresh
+After=prefix-manager.service router-prefix-refresh.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/routeros/router-ipv6-nat apply
+
+[Install]
+# Driven by router-prefix-refresh.service ExecStartPost

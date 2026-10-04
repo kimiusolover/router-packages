@@ -1,4 +1,4 @@
-.PHONY: check test-tiny-plan test-source-lock test-ax23v-entrypoint test-router-prefix build-% build-ax23v-%
+.PHONY: check test-tiny-plan test-source-lock test-ax23v-entrypoint test-router-prefix test-router-ipv6-nat build-% build-ax23v-%
 
 check:
 	bash ./packaging/check
@@ -14,6 +14,9 @@ test-ax23v-entrypoint:
 
 test-router-prefix:
 	bash ./packaging/test-router-prefix
+
+test-router-ipv6-nat:
+	bash ./packaging/test-router-ipv6-nat
 
 build-%:
 	bash ./packaging/build-package "$*"

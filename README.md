@@ -10,7 +10,7 @@ belong to `router-platform`; image assembly belongs to `router-firmware`.
 
 ```
 core/       # base OS components such as systemd
-network/    # Kea, Unbound, hostapd, Jool, nftables, router-prefix, and related services
+network/    # Kea, Unbound, hostapd, Jool, nftables, router-prefix, router-ipv6-nat, and related services
 packaging/  # shared package build and publication conventions
 ```
 
@@ -50,6 +50,12 @@ ULA `/48`, selects `static > DHCPv6-PD > ULA`, allocates configured `/64`s,
 and writes runtime-only networkd fragments. It deliberately does not reuse a
 WAN RA `/64` for LAN networks. See
 [`network/router-prefix/README.md`](network/router-prefix/README.md).
+
+## IPv6 NAT66 runtime
+
+`router-ipv6-nat` consumes the `router-prefix` registry and applies
+nftables NAT66 only when `NATRequired=yes`. See
+[`network/router-ipv6-nat/README.md`](network/router-ipv6-nat/README.md).
 
 ## Tiny Planner
 

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+files="$root/network/router-ipv6-nat/files"
+pfx="$root/network/router-prefix/files"
+test_root=$(mktemp -d); trap 'rm -rf "$test_root"' EXIT
+mkdir -p "$test_root/lib" "$test_root/etc" "$test_root/state" "$test_root/run" "$test_root/nat6" "$test_root/bin"
+# stub nft
+cat >"$test_root/bin/nft" <<'STUB'
+#!/bin/bash
+echo "nft $*" >&2
+exit 0
+STUB
+chmod +x "$test_root/bin/nft"
+export PATH="$test_root/bin:$PATH"
+
+cc -O2 -Wall -Wextra -Werror "$pfx/prefix-generator.c" -o "$test_root/lib/prefix-generator"
+cp "$pfx/prefix-manager" "$pfx/write-delegated" "$pfx/prefix.conf" "$test_root/lib/"
+cp "$pfx/prefix.conf" "$test_root/etc/"
+cp "$files/router-ipv6-nat" "$files/router-ipv6-nat.conf" "$test_root/lib/"
+chmod +x "$test_root/lib/"*
+
+env_pfx=(env ROUTER_PREFIX_LIB="$test_root/lib" ROUTER_PREFIX_ETC="$test_root/etc"
+  ROUTER_PREFIX_STATE="$test_root/state" ROUTER_PREFIX_RUN="$test_root/run"
+  ROUTER_IPV6_NAT_LIB="$test_root/lib" ROUTER_IPV6_NAT_ETC="$test_root/etc"
+  ROUTER_IPV6_NAT_RUN="$test_root/nat6" ROUTER_IPV6_NAT_CONFIG="$test_root/lib/router-ipv6-nat.conf")
+
+"${env_pfx[@]}" "$test_root/lib/prefix-manager" ensure
+grep -qx 'NATRequired=yes' "$test_root/run/active"
+"${env_pfx[@]}" "$test_root/lib/router-ipv6-nat" apply
+test -f "$test_root/nat6/routeros-nat6.nft"
+grep -q 'counter masquerade' "$test_root/nat6/routeros-nat6.nft"
+
+"${env_pfx[@]}" "$test_root/lib/write-delegated" '2409:1234:5678:1200::/56'
+"${env_pfx[@]}" "$test_root/lib/prefix-manager" ensure
+grep -qx 'NATRequired=no' "$test_root/run/active"
+"${env_pfx[@]}" "$test_root/lib/router-ipv6-nat" apply
+test ! -f "$test_root/nat6/routeros-nat6.nft"
+
+echo "router-ipv6-nat apply/flush against NATRequired is valid"
