@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+files="$root/network/router-dslite/files"
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/bin" "$tmp/etc" "$tmp/run"
+cat >"$tmp/bin/ip" <<'MOCK'
+#!/usr/bin/env bash
+echo "$*" >>"$ROUTER_DSLITE_IP_LOG"
+case "$*" in
+  "link show dev wan") echo '2: wan: <UP> mtu 1500 state UP' ;;
+  "-br link show dev wan") echo 'wan UP 1500' ;;
+  "-6 -o addr show dev wan scope global") echo '2: wan inet6 2001:db8:1::2/64 scope global' ;;
+  "-6 tunnel del ds-lite") exit 0 ;;
+  "-6 tunnel add ds-lite mode ipip6 remote 2001:db8:100::20 local 2001:db8:1::2 dev wan") exit 0 ;;
+  "link set dev ds-lite up") exit 0 ;;
+  "addr replace 192.0.0.2/29 dev ds-lite") exit 0 ;;
+  "link set dev ds-lite mtu 1460") exit 0 ;;
+  "-4 route add default dev ds-lite metric 50") [ "${ROUTER_DSLITE_FAIL_ROUTE:-0}" = 1 ] && exit 1 || exit 0 ;;
+  "-4 route del default dev ds-lite metric 50") exit 0 ;;
+  *) echo "unexpected ip invocation: $*" >&2; exit 1 ;;
+esac
+MOCK
+chmod +x "$tmp/bin/ip"
+cat >"$tmp/bin/sysctl" <<'MOCK'
+#!/usr/bin/env bash
+echo "sysctl $*" >>"$ROUTER_DSLITE_SYSCTL_LOG"
+case "$*" in
+  "-n net.ipv4.ip_forward") echo 0 ;;
+  "-w net.ipv4.ip_forward=1"|"-w net.ipv4.ip_forward=0") exit 0 ;;
+  *) exit 1 ;;
+esac
+MOCK
+cat >"$tmp/bin/nft" <<'MOCK'
+#!/usr/bin/env bash
+echo "nft $*" >>"$ROUTER_DSLITE_NFT_LOG"
+case "$1" in
+  delete) exit 0 ;;
+  -f) test -r "$2"; grep -q 'table inet routeros_dslite' "$2"; exit $? ;;
+  *) exit 1 ;;
+esac
+MOCK
+chmod +x "$tmp/bin/sysctl" "$tmp/bin/nft"
+cat >"$tmp/etc/router-dslite.conf" <<'EOF_CONF'
+Enabled=yes
+WAN=wan
+AFTR=2001:db8:100::20
+Backend=ip6tnl
+TunnelInterface=ds-lite
+B4Address=192.0.0.2/29
+MTU=1460
+IPv4DefaultRoute=yes
+EOF_CONF
+export ROUTER_DSLITE_IP_LOG="$tmp/ip.log"
+export ROUTER_DSLITE_SYSCTL_LOG="$tmp/sysctl.log"
+export ROUTER_DSLITE_NFT_LOG="$tmp/nft.log"
+env=(env PATH="$tmp/bin:$PATH" ROUTER_DSLITE_LIB="$tmp/lib" ROUTER_DSLITE_ETC="$tmp/etc" ROUTER_DSLITE_RUN="$tmp/run" ROUTER_DSLITE_CONFIG="$tmp/etc/router-dslite.conf")
+"${env[@]}" "$files/router-dslite" apply >/dev/null 2>&1
+grep -qx 'State=ready' "$tmp/run/state"
+grep -qx 'Backend=ip6tnl' "$tmp/run/state"
+grep -qx 'B4Address=192.0.0.2/29' "$tmp/run/state"
+grep -qx 'MTU=1460' "$tmp/run/state"
+grep -qx 'IPv4DefaultRoute=configured' "$tmp/run/state"
+grep -qx 'IPv4RouteMetric=50' "$tmp/run/state"
+grep -qx 'IPv4Forwarding=configured' "$tmp/run/state"
+grep -qx 'IPv4ForwardingPrevious=0' "$tmp/run/state"
+grep -qx 'Firewall=configured' "$tmp/run/state"
+grep -qx 'LANInterfaces=lan,guest,iot' "$tmp/run/state"
+grep -Fqx '  iifname { "lan", "guest", "iot" } oifname "ds-lite" ct state new,established,related counter accept' "$tmp/run/routeros-dslite.nft"
+grep -Fqx '  iifname "ds-lite" oifname { "lan", "guest", "iot" } ct state established,related counter accept' "$tmp/run/routeros-dslite.nft"
+! grep -q masquerade "$tmp/run/routeros-dslite.nft"
+grep -Fqx 'sysctl -w net.ipv4.ip_forward=1' "$tmp/sysctl.log"
+grep -qx 'AFTR=2001:db8:100::20' "$tmp/run/state"
+grep -Fqx -- '-6 tunnel add ds-lite mode ipip6 remote 2001:db8:100::20 local 2001:db8:1::2 dev wan' "$tmp/ip.log"
+grep -Fqx -- 'addr replace 192.0.0.2/29 dev ds-lite' "$tmp/ip.log"
+grep -Fqx -- 'link set dev ds-lite mtu 1460' "$tmp/ip.log"
+grep -Fqx -- '-4 route add default dev ds-lite metric 50' "$tmp/ip.log"
+"${env[@]}" "$files/router-dslite" stop >/dev/null 2>&1
+grep -Fqx -- '-4 route del default dev ds-lite metric 50' "$tmp/ip.log"
+grep -Fqx -- '-6 tunnel del ds-lite' "$tmp/ip.log"
+grep -Fqx 'sysctl -w net.ipv4.ip_forward=0' "$tmp/sysctl.log"
+grep -Fqx 'nft delete table inet routeros_dslite' "$tmp/nft.log"
+test ! -e "$tmp/run/state"
+test ! -e "$tmp/run/routeros-dslite.nft"
+# Route installation failure must remove the tunnel and leave no stale state.
+export ROUTER_DSLITE_FAIL_ROUTE=1
+if "${env[@]}" "$files/router-dslite" apply >/dev/null 2>&1; then
+  echo 'ip6tnl accepted a failed IPv4 route installation' >&2; exit 1
+fi
+test ! -e "$tmp/run/state"
+grep -Fqx -- '-6 tunnel del ds-lite' "$tmp/ip.log"
+echo 'router-dslite ip6tnl creates B4 tunnel state and installs a metric-scoped IPv4 default route'

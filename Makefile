@@ -1,4 +1,4 @@
-.PHONY: check test-router-dslite test-tiny-plan test-source-lock test-ax23v-entrypoint test-router-prefix test-router-ipv6-nat build-% build-ax23v-%
+.PHONY: check test-router-dslite-ip6tnl test-router-dslite-discovery test-router-dslite test-tiny-plan test-source-lock test-ax23v-entrypoint test-router-prefix test-router-ipv6-nat build-% build-ax23v-%
 
 check:
 	bash ./packaging/check
@@ -27,6 +27,12 @@ build-ax23v-%:
 .PHONY: test-preview-package
 test-preview-package:
 	python3 ./packaging/test-preview-package
+
+test-router-dslite-ip6tnl:
+	bash ./packaging/test-router-dslite-ip6tnl
+
+test-router-dslite-discovery:
+	bash ./packaging/test-router-dslite-discovery
 
 test-router-dslite:
 	bash ./packaging/test-router-dslite

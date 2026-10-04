@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch DHCPv6 DS-Lite AFTR-Name state
+
+[Path]
+PathChanged=/run/routeros/dslite/aftr-name
+PathModified=/run/routeros/dslite/aftr-name
+Unit=router-dslite-discover.service
+
+[Install]
+WantedBy=multi-user.target

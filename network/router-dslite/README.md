@@ -38,14 +38,43 @@ router-nic-discovery
 [DSLite]
 Enabled=yes
 WAN=enp2s0
-AFTR=                    # optional; auto discovery is future work
+AFTR=                    # optional; DHCPv6 option 64 discovery
 Backend=auto             # auto | stub | ip6tnl | jool
 TunnelInterface=ds-lite
 IPv4DefaultRoute=yes
 MTU=
+IPv4Forwarding=yes
+LANInterfaces=lan,guest,iot
+Firewall=allow
 ```
 
 `AFTR` is optional because BB.excite光 MEC does not require manual AFTR input. When it is empty, the skeleton records that automatic discovery is pending; `apply` waits for a resolved AFTR rather than hard-coding a provider endpoint.
+
+## AFTR discovery
+
+The DHCPv6 client is responsible for requesting RFC 6334 `OPTION_AFTR_NAME`
+(option 64). A client hook writes the returned FQDN to
+`/run/routeros/dslite/aftr-name`; `router-dslite-discover` validates the name,
+resolves one global AAAA record over IPv6, verifies the route through `WAN`,
+and atomically writes `/run/routeros/dslite/aftr`.
+
+The discovery adapter does not parse DHCPv6 packets itself. This keeps the
+DHCPv6 client integration replaceable and prevents provider-specific AFTR
+addresses from being hard-coded. `router-dslite-discover.path` reruns the
+adapter when the hook changes `aftr-name`; a successful discovery then runs
+the current skeleton apply path.
+
+```text
+DHCPv6 client option 64 hook
+  → /run/routeros/dslite/aftr-name
+  → router-dslite-discover.service
+  → /run/routeros/dslite/aftr
+  → router-dslite apply (stub or ip6tnl; route is added only after tunnel setup)
+```
+
+Discovery state is written to `/run/routeros/dslite/discovery-status`. An
+invalid FQDN, missing AAAA, or unreachable endpoint removes the previous
+resolved AFTR and fails closed.
 
 ## Backends
 
@@ -53,8 +82,34 @@ MTU=
 |---------|--------|
 | `auto` | **Default.** Selects the available skeleton backend; currently equivalent to `stub`. |
 | `stub` | Checks WAN GUA + an explicitly supplied AFTR; writes `/run/routeros/dslite/state`. No tunnel. |
-| `ip6tnl` | Planned: kernel `ip6tnl` + IPv4 default via tunnel. |
+| `ip6tnl` | Creates the kernel IPv4-in-IPv6 B4 tunnel, assigns `B4Address`, and adds a metric-scoped IPv4 default route after successful tunnel setup. |
 | `jool` | Planned: use the `jool` package after ISP DS-Lite mode is confirmed. |
+
+## LAN IPv4 forwarding and firewall
+
+For `Backend=ip6tnl`, a successful tunnel and route setup then enables
+`net.ipv4.ip_forward=1`. The previous sysctl value is recorded in state and
+restored by `router-dslite stop`; a failed later step rolls it back.
+
+The default LAN set follows `router-network`: `lan,guest,iot`. The package owns
+only the `inet routeros_dslite` nftables table. Its stateful rules allow:
+
+```text
+lan, guest, iot → ds-lite   new,established,related
+ds-lite → lan, guest, iot   established,related
+```
+
+The table deliberately uses `policy accept` so it does not become a second
+global default-deny firewall or block IPv6 control traffic to the AFTR. The
+existing system firewall remains responsible for the global forwarding policy.
+Set `Firewall=disabled`/`no` when that firewall owns the DS-Lite allow rule.
+The package does **not** add IPv4 masquerade: DS-Lite IPv4 NAT belongs to the
+AFTR, while `router-ipv6-nat` independently handles IPv6 NAT66.
+
+The implementation records `IPv4Forwarding=configured`, `Firewall=configured`,
+and `LANInterfaces=...` in `/run/routeros/dslite/state`. It does not claim
+IPv4 Internet connectivity until the router itself and each LAN VLAN are
+validated against a real AFTR.
 
 ## Runtime state
 
@@ -62,12 +117,15 @@ MTU=
 |------|---------|
 | `/run/routeros/dslite/status` | Ready=yes/no and last message |
 | `/run/routeros/dslite/state` | Active parameters after successful apply |
+| `/run/routeros/dslite/aftr-name` | DHCPv6 hook input: AFTR FQDN |
+| `/run/routeros/dslite/aftr` | Resolved global AFTR IPv6 address |
+| `/run/routeros/dslite/discovery-status` | AFTR discovery result |
 
 ## Commands
 
 ```sh
 router-dslite check    # prerequisites only
-router-dslite apply    # apply (stub: state file only)
+router-dslite apply    # apply tunnel, route, forwarding and firewall when enabled
 router-dslite status
 router-dslite stop
 ```
@@ -75,5 +133,7 @@ router-dslite stop
 ## MTU / MSS
 
 DS-Lite encapsulates IPv4 in IPv6; effective MTU is lower than native IPv4.
-Set `MTU=` after path tests; coordinate MSS clamping with nftables (not owned
-by this package in the stub phase).
+Set `MTU=` after path tests. `IPv4RouteMetric=` defaults to 50 and the route
+stage uses `ip route add`, never unconditional `ip route replace`; an existing
+native default remains present. Coordinate MSS clamping with nftables (not
+owned by this package).
