@@ -16,10 +16,9 @@ for component in "${tiny_components[@]}"; do
   test -s "$root/tiny/$component/features.yaml" || { echo "missing tiny policy: $component" >&2; exit 1; }
 done
 python3 "$root/packaging/tiny-plan" --help >/dev/null
-if ! python3 "$root/packaging/tiny-build-args" 2>/dev/null; then
-  status=$?
-  test "$status" -eq 1
-fi
+# Allow exit 1 (usage / no args); any other non-zero is a hard failure.
+# Must use || so $? is still the python exit code (if ! ...; then status=$? loses it).
+python3 "$root/packaging/tiny-build-args" 2>/dev/null || test $? -eq 1
 python3 -m py_compile "$root/packaging/verify-source-lock"
 bash -n "$root/packaging/build-ax23v-package"
 bash "$root/packaging/test-ax23v-entrypoint"
