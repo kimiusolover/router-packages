@@ -7,25 +7,42 @@ generated=$($test_root/prefix-generator)
 [[ $generated =~ ^fd[0-9a-f]{2}:[0-9a-f]{4}:[0-9a-f]{4}::/48$ ]]
 mkdir -p "$test_root/lib" "$test_root/etc" "$test_root/state" "$test_root/run"
 cp "$test_root/prefix-generator" "$test_root/lib/prefix-generator"
-cp "$files/prefix-manager" "$test_root/lib/prefix-manager"; cp "$files/prefix-apply" "$test_root/lib/prefix-apply"
+cp "$files/prefix-manager" "$test_root/lib/prefix-manager"
+cp "$files/prefix-apply" "$test_root/lib/prefix-apply"
+cp "$files/write-delegated" "$test_root/lib/write-delegated"
 cp "$files/prefix.conf" "$test_root/etc/prefix.conf"
+chmod +x "$test_root/lib/prefix-manager" "$test_root/lib/prefix-apply" "$test_root/lib/write-delegated" "$test_root/lib/prefix-generator"
 prefix_env=(env ROUTER_PREFIX_LIB="$test_root/lib" ROUTER_PREFIX_ETC="$test_root/etc" ROUTER_PREFIX_STATE="$test_root/state" ROUTER_PREFIX_RUN="$test_root/run")
+
 "${prefix_env[@]}" "$test_root/lib/prefix-manager" ensure
 ula=$(sed -n 's/^Prefix=//p' "$test_root/state/ula")
 [[ $ula =~ ^fd[0-9a-f]{2}:[0-9a-f]{4}:[0-9a-f]{4}::/48$ ]]
+grep -qx 'Source=generated' "$test_root/run/active"
+grep -qx 'NATRequired=yes' "$test_root/run/active"
 test "$("${prefix_env[@]}" "$test_root/lib/prefix-manager" allocate lan)" = "lan=${ula%::*}:1::/64"
-printf '[Prefix]\nPrefix=2409:1234:5678:1200::/56\n' >"$test_root/run/delegated"
+
+"${prefix_env[@]}" "$test_root/lib/write-delegated" '2409:1234:5678:1200::/56'
 status=$("${prefix_env[@]}" "$test_root/lib/prefix-manager" status)
 grep -qx 'Source=delegated' <<<"$status"
+grep -qx 'NATRequired=no' <<<"$status"
 grep -qx 'lan=2409:1234:5678:1201::/64' <<<"$status"
+
+"${prefix_env[@]}" "$test_root/lib/write-delegated" --clear
+status=$("${prefix_env[@]}" "$test_root/lib/prefix-manager" status)
+grep -qx 'Source=generated' <<<"$status"
+grep -qx 'NATRequired=yes' <<<"$status"
+grep -qx "Prefix=$ula" <<<"$status"
+
 printf '\n[Prefix]\nStaticPrefix=2001:db8:1234::/48\n' >>"$test_root/etc/prefix.conf"
 status=$("${prefix_env[@]}" "$test_root/lib/prefix-manager" status)
 grep -qx 'Source=static' <<<"$status"
+grep -qx 'NATRequired=no' <<<"$status"
 grep -qx 'lan=2001:db8:1234:1::/64' <<<"$status"
+
 "${prefix_env[@]}" ROUTER_PREFIX_NETWORKD_RUN="$test_root/networkd" "$test_root/lib/prefix-apply" apply
 grep -qx 'Prefix=2001:db8:1234:1::/64' "$test_root/networkd/20-routeros-lan.network.d/50-prefix.conf"
 test -f "$test_root/networkd/20-routeros-guest.network.d/50-prefix.conf"
 sed -i '/^guest=2$/d' "$test_root/etc/prefix.conf"
 "${prefix_env[@]}" ROUTER_PREFIX_NETWORKD_RUN="$test_root/networkd" "$test_root/lib/prefix-apply" apply
 test ! -e "$test_root/networkd/20-routeros-guest.network.d"
-echo "router-prefix ULA persistence and PD precedence are valid"
+echo "router-prefix ULA persistence, PD lifecycle, and NATRequired are valid"

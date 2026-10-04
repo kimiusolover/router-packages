@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Atomically publish or clear /run/routeros/prefix/delegated for router-prefix.
+# Usage:
+#   write-delegated 2406:db8:cafe::/56
+#   write-delegated --clear
+set -euo pipefail
+run=${ROUTER_PREFIX_RUN:-/run/routeros/prefix}
+pd_file=${ROUTER_PREFIX_PD_FILE:-$run/delegated}
+case ${1:-} in
+  --clear)
+    rm -f "$pd_file"
+    echo "cleared $pd_file" >&2
+    exit 0
+    ;;
+  -h|--help|"")
+    echo "usage: write-delegated <prefix/48|/56> | write-delegated --clear" >&2
+    exit 64
+    ;;
+esac
+prefix=$1
+[[ $prefix =~ ^[0-9A-Fa-f:]+/(48|56)$ && $prefix != *:::* && $prefix == *::* ]] || {
+  echo "invalid prefix: $prefix" >&2; exit 65
+}
+mkdir -p "$run"
+tmp="$pd_file.new.$$"
+umask 077
+printf '[Prefix]\nPrefix=%s\n' "$prefix" >"$tmp"
+mv -f "$tmp" "$pd_file"
+echo "published $prefix → $pd_file" >&2
