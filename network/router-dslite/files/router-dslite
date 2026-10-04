@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# DS-Lite control: validate WAN IPv6 + optional AFTR, then record the skeleton state.
-# No tunnel is created until a concrete backend is implemented and selected.
+# DS-Lite control: validate WAN IPv6/AFTR and manage the selected lifecycle backend.
+# ip6tnl creates only the IPv4-in-IPv6 B4 tunnel; IPv4 routes are a later stage.
 set -euo pipefail
 lib=${ROUTER_DSLITE_LIB:-/usr/lib/routeros}
 etc=${ROUTER_DSLITE_ETC:-/etc/routeros}
@@ -26,6 +26,7 @@ tun=$(conf TunnelInterface); tun=${tun:-ds-lite}
 backend=$(conf Backend); backend=${backend:-auto}
 ipv4_default=$(conf IPv4DefaultRoute); ipv4_default=${ipv4_default:-yes}
 mtu=$(conf MTU); mtu=${mtu:-}; mss=$(conf MSSClamp); mss=${mss:-}
+b4_address=$(conf B4Address); b4_address=${b4_address:-192.0.0.2/29}
 auto_discovery_note="AFTR discovery is pending (DHCPv6 option 64)"
 write_status() {
   mkdir -p "$run"; umask 077
@@ -73,18 +74,58 @@ apply_stub() {
   { echo "State=stub-ready"; echo "WAN=$wan"; echo "AFTR=$aftr"; echo "AFTRSource=$aftr_source"
     echo "LocalAddress=$local_addr"; echo "TunnelInterface=$tun"; echo "RequestedBackend=$backend"
     echo "Backend=stub"; echo "IPv4DefaultRoute=$ipv4_default"; echo "MTU=${mtu:-}"; echo "MSSClamp=${mss:-}"
-    echo "Note=tunnel not created; automatic discovery and ip6tnl/jool backends are future work"
+    echo "Note=tunnel not created; ip6tnl and IPv4 route are separate lifecycle stages"
   } >"$state_file.new.$$"
   mv -f "$state_file.new.$$" "$state_file"
   echo "DS-Lite stub ready: WAN=$wan AFTR=$aftr Local=$local_addr (no tunnel yet)" >&2
 }
-apply_ip6tnl() { echo "Backend=ip6tnl is not implemented in this skeleton" >&2; write_status no "ip6tnl backend not implemented"; return 1; }
+apply_ip6tnl() {
+  command -v ip >/dev/null || {
+    write_status no "ip command is missing for ip6tnl backend"
+    return 1
+  }
+  [ -n "$local_addr" ] || {
+    write_status no "WAN GUA is missing for ip6tnl backend"
+    return 1
+  }
+  # Re-apply is idempotent: remove only the tunnel owned by this package.
+  ip -6 tunnel del "$tun" 2>/dev/null || true
+  if ! ip -6 tunnel add "$tun" mode ipip6 remote "$aftr" local "$local_addr" dev "$wan"; then
+    write_status no "failed to create ip6tnl tunnel"
+    return 1
+  fi
+  if ! ip link set dev "$tun" up || ! ip addr replace "$b4_address" dev "$tun"; then
+    ip -6 tunnel del "$tun" 2>/dev/null || true
+    write_status no "failed to configure ip6tnl tunnel"
+    return 1
+  fi
+  if [ -n "$mtu" ] && ! ip link set dev "$tun" mtu "$mtu"; then
+    ip -6 tunnel del "$tun" 2>/dev/null || true
+    write_status no "failed to set ip6tnl MTU"
+    return 1
+  fi
+  mkdir -p "$run"; umask 077
+  { echo "State=ip6tnl-ready"; echo "WAN=$wan"; echo "AFTR=$aftr"; echo "AFTRSource=$aftr_source"
+    echo "LocalAddress=$local_addr"; echo "TunnelInterface=$tun"; echo "RequestedBackend=$backend"
+    echo "Backend=ip6tnl"; echo "B4Address=$b4_address"; echo "MTU=${mtu:-kernel-default}"
+    echo "IPv4DefaultRoute=not-configured"; echo "Note=IPv4 route is a later lifecycle stage"
+  } >"$state_file.new.$$"
+  mv -f "$state_file.new.$$" "$state_file"
+  echo "DS-Lite ip6tnl ready: WAN=$wan AFTR=$aftr Local=$local_addr B4=$b4_address (no route yet)" >&2
+}
 apply_jool() { echo "Backend=jool is not implemented in this skeleton" >&2; write_status no "jool backend not implemented"; return 1; }
 apply() {
   check_prereqs || return 1
   case "$backend" in auto|stub) apply_stub;; ip6tnl) apply_ip6tnl;; jool) apply_jool;; esac
 }
-stop() { rm -f "$state_file"; write_status no "stopped"; echo "DS-Lite stopped (stub; no tunnel to remove)" >&2; }
+stop() {
+  if { [ "$backend" = ip6tnl ] || { [ -r "$state_file" ] && grep -qx 'Backend=ip6tnl' "$state_file"; }; } && command -v ip >/dev/null; then
+    ip -6 tunnel del "$tun" 2>/dev/null || true
+  fi
+  rm -f "$state_file"
+  write_status no "stopped"
+  echo "DS-Lite stopped" >&2
+}
 status() {
   if [ -r "$status_file" ]; then cat "$status_file"; else echo "Ready=unknown"; echo "Message=no status yet; run apply"; fi
   if [ -r "$state_file" ]; then echo "---"; cat "$state_file"; fi

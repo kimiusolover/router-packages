@@ -66,7 +66,7 @@ DHCPv6 client option 64 hook
   → /run/routeros/dslite/aftr-name
   → router-dslite-discover.service
   → /run/routeros/dslite/aftr
-  → router-dslite apply (currently stub only)
+  → router-dslite apply (stub or ip6tnl; no IPv4 route yet)
 ```
 
 Discovery state is written to `/run/routeros/dslite/discovery-status`. An
@@ -79,7 +79,7 @@ resolved AFTR and fails closed.
 |---------|--------|
 | `auto` | **Default.** Selects the available skeleton backend; currently equivalent to `stub`. |
 | `stub` | Checks WAN GUA + an explicitly supplied AFTR; writes `/run/routeros/dslite/state`. No tunnel. |
-| `ip6tnl` | Planned: kernel `ip6tnl` + IPv4 default via tunnel. |
+| `ip6tnl` | Creates the kernel IPv4-in-IPv6 B4 tunnel and assigns `B4Address`; does not add a default route yet. |
 | `jool` | Planned: use the `jool` package after ISP DS-Lite mode is confirmed. |
 
 ## Runtime state
@@ -104,5 +104,5 @@ router-dslite stop
 ## MTU / MSS
 
 DS-Lite encapsulates IPv4 in IPv6; effective MTU is lower than native IPv4.
-Set `MTU=` after path tests; coordinate MSS clamping with nftables (not owned
-by this package in the stub phase).
+Set `MTU=` after path tests; the ip6tnl stage does not add an IPv4 route yet.
+Coordinate MSS clamping with nftables (not owned by this package).
