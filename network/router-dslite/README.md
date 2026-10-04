@@ -38,20 +38,21 @@ router-nic-discovery
 [DSLite]
 Enabled=yes
 WAN=enp2s0
-AFTR=                    # required — ISP AFTR IPv6 address
-Backend=stub             # stub | ip6tnl | jool
+AFTR=                    # optional; auto discovery is future work
+Backend=auto             # auto | stub | ip6tnl | jool
 TunnelInterface=ds-lite
 IPv4DefaultRoute=yes
 MTU=
 ```
 
-Until `AFTR` is set, `apply` fails with a clear error (by design).
+`AFTR` is optional because BB.excite光 MEC does not require manual AFTR input. When it is empty, the skeleton records that automatic discovery is pending; `apply` waits for a resolved AFTR rather than hard-coding a provider endpoint.
 
 ## Backends
 
 | Backend | Status |
 |---------|--------|
-| `stub` | **Default.** Checks WAN GUA + AFTR; writes `/run/routeros/dslite/state`. No tunnel. |
+| `auto` | **Default.** Selects the available skeleton backend; currently equivalent to `stub`. |
+| `stub` | Checks WAN GUA + an explicitly supplied AFTR; writes `/run/routeros/dslite/state`. No tunnel. |
 | `ip6tnl` | Planned: kernel `ip6tnl` + IPv4 default via tunnel. |
 | `jool` | Planned: use the `jool` package after ISP DS-Lite mode is confirmed. |
 
