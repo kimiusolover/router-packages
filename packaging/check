@@ -22,10 +22,13 @@ python3 "$root/packaging/tiny-build-args" 2>/dev/null || test $? -eq 1
 python3 -m py_compile "$root/packaging/verify-source-lock"
 bash -n "$root/packaging/build-ax23v-package"
 bash -n "$root/network/router-dslite/files/router-dslite"
+bash -n "$root/network/router-dslite/files/router-dslite-discover"
+bash -n "$root/packaging/test-router-dslite-discovery"
 bash "$root/packaging/test-ax23v-entrypoint"
 bash "$root/packaging/test-router-prefix"
 bash "$root/packaging/test-router-nic-discovery"
 bash "$root/packaging/test-router-ipv6-nat"
+bash "$root/packaging/test-router-dslite-discovery"
 bash "$root/packaging/test-router-dslite"
 
 for file in \

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Resolve the RFC 6334 AFTR-Name supplied by a DHCPv6 client hook.
+# The DHCPv6 client owns option parsing; this adapter owns validation, AAAA
+# resolution, reachability, and atomic runtime state.
+set -euo pipefail
+run=${ROUTER_DSLITE_RUN:-/run/routeros/dslite}
+wan=${ROUTER_DSLITE_DISCOVERY_WAN:-enp2s0}
+name_file=${ROUTER_DSLITE_AFTR_NAME_FILE:-$run/aftr-name}
+aftr_file=${ROUTER_DSLITE_AFTR_FILE:-$run/aftr}
+status_file=${ROUTER_DSLITE_DISCOVERY_STATUS:-$run/discovery-status}
+mkdir -p "$run"
+
+atomic_write() {
+  local target=$1
+  shift
+  umask 077
+  "$@" >"$target.new.$$"
+  mv -f "$target.new.$$" "$target"
+}
+fail() {
+  local message=$1
+  atomic_write "$status_file" printf 'Ready=no\nSource=dhcpv6-option-64\nMessage=%s\n' "$message"
+  rm -f "$aftr_file"
+  echo "router-dslite discovery: $message" >&2
+  exit 1
+}
+
+[ -r "$name_file" ] || fail "AFTR-Name input is missing"
+name=$(cat "$name_file")
+# Normalize the DNS presentation form, but do not accept an IP literal.
+name=${name%.}
+[ -n "$name" ] || fail "AFTR-Name is empty"
+[ "${#name}" -le 253 ] || fail "AFTR-Name is too long"
+case "$name" in
+  *[!A-Za-z0-9.-]*|.*|*.) fail "AFTR-Name is not a valid DNS name" ;;
+  *[!0-9A-Za-z.-]*) fail "AFTR-Name is not a valid DNS name" ;;
+  *[A-Za-z-]*) ;;
+  *) fail "AFTR-Name must not be an IPv4 literal" ;;
+esac
+old_ifs=$IFS; IFS=.
+read -ra labels <<<"$name"
+IFS=$old_ifs
+[ "${#labels[@]}" -gt 0 ] || fail "AFTR-Name has no labels"
+for label in "${labels[@]}"; do
+  [ -n "$label" ] || fail "AFTR-Name contains an empty label"
+  [ "${#label}" -le 63 ] || fail "AFTR-Name label is too long"
+  case "$label" in
+    -*|*-|*[!A-Za-z0-9-]*) fail "AFTR-Name contains an invalid label" ;;
+  esac
+done
+
+# getent performs normal resolver lookup and returns IPv6 addresses for ahostsv6.
+aftr=$(getent ahostsv6 "$name" | awk '
+  $1 !~ /^fe80:/ && $1 !~ /^(fc|fd)/ && $1 !~ /^::1$/ {print $1; exit}')
+[ -n "$aftr" ] || fail "AFTR-Name has no usable global AAAA record"
+# Do not accept a resolver result that is not reachable over the configured WAN.
+ip -6 route get "$aftr" oif "$wan" >/dev/null 2>&1 || fail "AFTR AAAA is not reachable through WAN $wan"
+
+atomic_write "$aftr_file" printf '%s\n' "$aftr"
+atomic_write "$status_file" printf 'Ready=yes\nSource=dhcpv6-option-64\nName=%s\nAddress=%s\nWAN=%s\n' "$name" "$aftr" "$wan"
+echo "router-dslite discovery: $name -> $aftr (WAN=$wan)" >&2

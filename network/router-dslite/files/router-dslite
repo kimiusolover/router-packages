@@ -13,16 +13,24 @@ state_file=$run/state; status_file=$run/status
 enabled=$(conf Enabled); enabled=${enabled:-yes}
 wan=$(conf WAN); wan=${wan:-enp2s0}
 aftr=$(conf AFTR); aftr=${aftr:-}
+aftr_file=${ROUTER_DSLITE_AFTR_FILE:-$run/aftr}
+aftr_source=auto
+if [ -n "$aftr" ] && [ "$aftr" != unset ]; then
+  aftr_source=explicit
+elif [ -r "$aftr_file" ]; then
+  aftr=$(tr -d '[:space:]' <"$aftr_file")
+  [ -n "$aftr" ] && aftr_source=discovered
+fi
 local_addr=$(conf LocalAddress); local_addr=${local_addr:-}
 tun=$(conf TunnelInterface); tun=${tun:-ds-lite}
 backend=$(conf Backend); backend=${backend:-auto}
 ipv4_default=$(conf IPv4DefaultRoute); ipv4_default=${ipv4_default:-yes}
 mtu=$(conf MTU); mtu=${mtu:-}; mss=$(conf MSSClamp); mss=${mss:-}
-auto_discovery_note="automatic AFTR discovery is not implemented in this skeleton"
+auto_discovery_note="AFTR discovery is pending (DHCPv6 option 64)"
 write_status() {
   mkdir -p "$run"; umask 077
   { echo "Enabled=$enabled"; echo "WAN=$wan"; echo "AFTR=$aftr"
-    echo "AFTRSource=$(if [ -n "$aftr" ] && [ "$aftr" != unset ]; then echo explicit; else echo auto; fi)"
+    echo "AFTRSource=$aftr_source"
     echo "LocalAddress=${local_addr:-}"; echo "TunnelInterface=$tun"; echo "Backend=$backend"
     echo "Ready=$1"; echo "Message=$2"
     echo "Updated=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
@@ -58,11 +66,11 @@ check_prereqs() {
     write_status no "AFTR is optional; $auto_discovery_note"
     echo "AFTR is optional; $auto_discovery_note" >&2; return 1
   fi
-  write_status yes "prerequisites ok (backend=$backend, AFTR=explicit)"
+  write_status yes "prerequisites ok (backend=$backend, AFTR=$aftr_source)"
 }
 apply_stub() {
   mkdir -p "$run"; umask 077
-  { echo "State=stub-ready"; echo "WAN=$wan"; echo "AFTR=$aftr"; echo "AFTRSource=explicit"
+  { echo "State=stub-ready"; echo "WAN=$wan"; echo "AFTR=$aftr"; echo "AFTRSource=$aftr_source"
     echo "LocalAddress=$local_addr"; echo "TunnelInterface=$tun"; echo "RequestedBackend=$backend"
     echo "Backend=stub"; echo "IPv4DefaultRoute=$ipv4_default"; echo "MTU=${mtu:-}"; echo "MSSClamp=${mss:-}"
     echo "Note=tunnel not created; automatic discovery and ip6tnl/jool backends are future work"

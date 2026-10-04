@@ -47,6 +47,32 @@ MTU=
 
 `AFTR` is optional because BB.excite光 MEC does not require manual AFTR input. When it is empty, the skeleton records that automatic discovery is pending; `apply` waits for a resolved AFTR rather than hard-coding a provider endpoint.
 
+## AFTR discovery
+
+The DHCPv6 client is responsible for requesting RFC 6334 `OPTION_AFTR_NAME`
+(option 64). A client hook writes the returned FQDN to
+`/run/routeros/dslite/aftr-name`; `router-dslite-discover` validates the name,
+resolves one global AAAA record over IPv6, verifies the route through `WAN`,
+and atomically writes `/run/routeros/dslite/aftr`.
+
+The discovery adapter does not parse DHCPv6 packets itself. This keeps the
+DHCPv6 client integration replaceable and prevents provider-specific AFTR
+addresses from being hard-coded. `router-dslite-discover.path` reruns the
+adapter when the hook changes `aftr-name`; a successful discovery then runs
+the current skeleton apply path.
+
+```text
+DHCPv6 client option 64 hook
+  → /run/routeros/dslite/aftr-name
+  → router-dslite-discover.service
+  → /run/routeros/dslite/aftr
+  → router-dslite apply (currently stub only)
+```
+
+Discovery state is written to `/run/routeros/dslite/discovery-status`. An
+invalid FQDN, missing AAAA, or unreachable endpoint removes the previous
+resolved AFTR and fails closed.
+
 ## Backends
 
 | Backend | Status |
@@ -62,6 +88,9 @@ MTU=
 |------|---------|
 | `/run/routeros/dslite/status` | Ready=yes/no and last message |
 | `/run/routeros/dslite/state` | Active parameters after successful apply |
+| `/run/routeros/dslite/aftr-name` | DHCPv6 hook input: AFTR FQDN |
+| `/run/routeros/dslite/aftr` | Resolved global AFTR IPv6 address |
+| `/run/routeros/dslite/discovery-status` | AFTR discovery result |
 
 ## Commands
 

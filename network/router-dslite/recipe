@@ -6,6 +6,9 @@ build() {
   install -Dm644 "$SOURCE_ROOT/router-dslite.conf" "$DESTDIR/usr/lib/routeros/router-dslite.conf"
   install -Dm644 "$SOURCE_ROOT/router-dslite.service" "$DESTDIR/usr/lib/systemd/system/router-dslite.service"
   install -Dm644 "$SOURCE_ROOT/router-dslite-refresh.service" "$DESTDIR/usr/lib/systemd/system/router-dslite-refresh.service"
+  install -Dm755 "$SOURCE_ROOT/router-dslite-discover" "$DESTDIR/usr/lib/routeros/router-dslite-discover"
+  install -Dm644 "$SOURCE_ROOT/router-dslite-discover.service" "$DESTDIR/usr/lib/systemd/system/router-dslite-discover.service"
+  install -Dm644 "$SOURCE_ROOT/router-dslite-discover.path" "$DESTDIR/usr/lib/systemd/system/router-dslite-discover.path"
   install -Dm644 "$SOURCE_ROOT/router-dslite.tmpfiles.conf" "$DESTDIR/usr/lib/tmpfiles.d/router-dslite.conf"
   install -d "$DESTDIR/usr/share/routeros/provenance"
   printf '{"component":"router-dslite","source":"router-packages","revision":"%s"}\n' \
