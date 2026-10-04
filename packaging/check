@@ -16,7 +16,10 @@ for component in "${tiny_components[@]}"; do
   test -s "$root/tiny/$component/features.yaml" || { echo "missing tiny policy: $component" >&2; exit 1; }
 done
 python3 "$root/packaging/tiny-plan" --help >/dev/null
-python3 "$root/packaging/tiny-build-args" 2>/dev/null || test "$$?" -eq 1
+if ! python3 "$root/packaging/tiny-build-args" 2>/dev/null; then
+  status=$?
+  test "$status" -eq 1
+fi
 python3 -m py_compile "$root/packaging/verify-source-lock"
 bash -n "$root/packaging/build-ax23v-package"
 bash "$root/packaging/test-ax23v-entrypoint"
