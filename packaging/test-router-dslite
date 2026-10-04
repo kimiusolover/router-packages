@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+files="$root/network/router-dslite/files"
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/bin" "$tmp/etc" "$tmp/run"
+cat >"$tmp/bin/ip" <<'MOCK'
+#!/usr/bin/env bash
+case "$*" in
+  *"link show dev wan"*) echo '2: wan: <UP> mtu 1500 state UP' ;;
+  *"addr show dev wan scope global"*) echo '2: wan inet6 2001:db8:1234::2/64 scope global' ;;
+  *) exit 1 ;;
+esac
+MOCK
+chmod +x "$tmp/bin/ip"
+run=(env PATH="$tmp/bin:$PATH" ROUTER_DSLITE_LIB="$tmp/lib" ROUTER_DSLITE_ETC="$tmp/etc" ROUTER_DSLITE_RUN="$tmp/run" ROUTER_DSLITE_CONFIG="$tmp/etc/router-dslite.conf")
+cp "$files/router-dslite" "$tmp/router-dslite"; chmod +x "$tmp/router-dslite"
+cat >"$tmp/etc/router-dslite.conf" <<'EOF_CONF'
+Enabled=yes
+WAN=wan
+AFTR=
+Backend=auto
+EOF_CONF
+if "${run[@]}" "$tmp/router-dslite" check >/dev/null 2>&1; then
+  echo 'check accepted missing AFTR' >&2; exit 1
+fi
+grep -qx 'AFTRSource=auto' "$tmp/run/status"
+grep -q 'automatic AFTR discovery is not implemented' "$tmp/run/status"
+cat >"$tmp/etc/router-dslite.conf" <<'EOF_CONF'
+Enabled=yes
+WAN=wan
+AFTR=2001:db8::aftr
+Backend=auto
+EOF_CONF
+"${run[@]}" "$tmp/router-dslite" apply >/dev/null 2>&1
+grep -qx 'State=stub-ready' "$tmp/run/state"
+grep -qx 'RequestedBackend=auto' "$tmp/run/state"
+grep -qx 'Backend=stub' "$tmp/run/state"
+grep -qx 'LocalAddress=2001:db8:1234::2' "$tmp/run/state"
+"${run[@]}" "$tmp/router-dslite" stop >/dev/null 2>&1
+test ! -e "$tmp/run/state"
+echo 'router-dslite validates WAN GUA, treats AFTR as optional, and applies auto stub'

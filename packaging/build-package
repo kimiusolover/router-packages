@@ -4,7 +4,7 @@
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then
-  echo "usage: $0 <systemd|hostapd|kea|unbound|nftables|jool|router-prefix>" >&2
+  echo "usage: $0 <systemd|hostapd|kea|unbound|nftables|jool|router-prefix|router-dslite>" >&2
   exit 64
 fi
 
@@ -12,7 +12,7 @@ package=$1
 root=$(cd "$(dirname "$0")/.." && pwd)
 case "$package" in
   systemd) recipe="$root/core/systemd/recipe" ;;
-  hostapd|kea|unbound|nftables|jool|router-prefix|router-nic-discovery) recipe="$root/network/$package/recipe" ;;
+  hostapd|kea|unbound|nftables|jool|router-prefix|router-nic-discovery|router-dslite) recipe="$root/network/$package/recipe" ;;
   *) echo "unknown package: $package" >&2; exit 64 ;;
 esac
 
