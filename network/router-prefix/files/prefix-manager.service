@@ -1,7 +1,7 @@
 [Unit]
 Description=RouterOS IPv6 Prefix Manager
-Wants=network-online.target
-After=network-online.target
+Wants=network-online.target router-network.service
+After=network-online.target router-network.service
 Before=router-network-ready.target
 
 [Service]
