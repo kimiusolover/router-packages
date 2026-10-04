@@ -73,12 +73,18 @@ wan_network=$tmp/10-routeros-wan.network
 declare -a generated=("10-routeros-wan.network")
 : >"$tmp/state-files"
 
+declare -A seen_vlan_ids=()
+declare -A seen_names=()
+
 while IFS= read -r vid; do
   [[ -n $vid ]] || continue
   case $vid in
     *[!0-9]*) fail "invalid VLAN ID: $vid" ;;
   esac
   ((vid >= 1 && vid <= 4094)) || fail "VLAN ID out of range: $vid"
+
+  [[ -z ${seen_vlan_ids[$vid]+x} ]] || fail "duplicate VLAN ID: $vid"
+  seen_vlan_ids[$vid]=1
 
   name=$(section_value "$config_file" "VLAN:$vid" Name)
   if [[ -z $name ]]; then
@@ -91,6 +97,9 @@ while IFS= read -r vid; do
   fi
   [[ $name =~ ^[a-z][a-z0-9-]*$ && ${#name} -le 15 ]] ||
     fail "invalid interface name for VLAN $vid: $name"
+
+  [[ -z ${seen_names[$name]+x} ]] || fail "duplicate VLAN interface name: $name"
+  seen_names[$name]=1
 
   address=$(section_value "$config_file" "VLAN:$vid" Address)
 
