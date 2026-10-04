@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+source_kind=internal
+
+build() {
+  install -Dm755 "$SOURCE_ROOT/router-ipv6-nat" "$DESTDIR/usr/lib/routeros/router-ipv6-nat"
+  install -Dm644 "$SOURCE_ROOT/router-ipv6-nat.conf" "$DESTDIR/usr/lib/routeros/router-ipv6-nat.conf"
+  install -Dm644 "$SOURCE_ROOT/router-ipv6-nat.service" "$DESTDIR/usr/lib/systemd/system/router-ipv6-nat.service"
+  install -Dm644 "$SOURCE_ROOT/router-ipv6-nat-refresh.service" "$DESTDIR/usr/lib/systemd/system/router-ipv6-nat-refresh.service"
+  install -Dm644 "$SOURCE_ROOT/router-ipv6-nat.tmpfiles.conf" "$DESTDIR/usr/lib/tmpfiles.d/router-ipv6-nat.conf"
+  install -d "$DESTDIR/usr/share/routeros/provenance"
+  printf '{"component":"router-ipv6-nat","source":"router-packages","revision":"%s"}\n' \
+    "$ROUTER_PACKAGES_REVISION" >"$DESTDIR/usr/share/routeros/provenance/router-ipv6-nat-build.json"
+}

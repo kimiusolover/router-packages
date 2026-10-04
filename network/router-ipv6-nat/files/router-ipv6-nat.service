@@ -1,0 +1,15 @@
+[Unit]
+Description=RouterOS IPv6 NAT66 (ULA → WAN)
+After=prefix-manager.service router-network.service network-online.target
+Requires=prefix-manager.service
+Wants=network-online.target
+Before=router-network-ready.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/routeros/router-ipv6-nat apply
+ExecStop=/usr/lib/routeros/router-ipv6-nat flush
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
