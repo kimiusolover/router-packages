@@ -4,16 +4,16 @@ check:
 	./packaging/check
 
 test-tiny-plan:
-	./packaging/test-tiny-plan
+	bash ./packaging/test-tiny-plan
 
 test-source-lock:
-	./packaging/test-source-lock
+	bash ./packaging/test-source-lock
 
 test-ax23v-entrypoint:
-	./packaging/test-ax23v-entrypoint
+	bash ./packaging/test-ax23v-entrypoint
 
 test-router-prefix:
-	./packaging/test-router-prefix
+	bash ./packaging/test-router-prefix
 
 build-%:
 	./packaging/build-package "$*"
