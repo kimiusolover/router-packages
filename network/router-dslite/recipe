@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+source_kind=internal
+
+build() {
+  install -Dm755 "$SOURCE_ROOT/router-dslite" "$DESTDIR/usr/lib/routeros/router-dslite"
+  install -Dm644 "$SOURCE_ROOT/router-dslite.conf" "$DESTDIR/usr/lib/routeros/router-dslite.conf"
+  install -Dm644 "$SOURCE_ROOT/router-dslite.service" "$DESTDIR/usr/lib/systemd/system/router-dslite.service"
+  install -Dm644 "$SOURCE_ROOT/router-dslite-refresh.service" "$DESTDIR/usr/lib/systemd/system/router-dslite-refresh.service"
+  install -Dm644 "$SOURCE_ROOT/router-dslite.tmpfiles.conf" "$DESTDIR/usr/lib/tmpfiles.d/router-dslite.conf"
+  install -d "$DESTDIR/usr/share/routeros/provenance"
+  printf '{"component":"router-dslite","source":"router-packages","revision":"%s"}\n' \
+    "$ROUTER_PACKAGES_REVISION" >"$DESTDIR/usr/share/routeros/provenance/router-dslite-build.json"
+}

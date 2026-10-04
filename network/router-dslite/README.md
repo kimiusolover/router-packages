@@ -1,0 +1,78 @@
+# router-dslite
+
+DS-Lite (Dual-Stack Lite): **IPv4 Internet over the existing IPv6 WAN**.
+
+Independent of DHCPv6-PD. MEC may return `NoPrefixAvail` for IA_PD while WAN
+GUA from RA still works; DS-Lite only needs that WAN IPv6 path plus an AFTR.
+
+Does not allocate LAN prefixes. Does not configure NAT66 (see `router-ipv6-nat`).
+
+## Layering
+
+```text
+router-nic-discovery
+  → router-network          (WAN IPv6 RA, VLAN)
+  → router-prefix           (ULA / PD registry)
+  → router-ipv6-nat         (ULA → WAN GUA when needed)
+  → router-dslite           (this package: IPv4 over IPv6)
+  → nftables / firewall
+```
+
+| Path | Mechanism |
+|------|-----------|
+| LAN IPv6 | ULA + NAT66 or delegated prefix |
+| LAN IPv4 | DS-Lite tunnel → AFTR → IPv4 Internet |
+
+## Units
+
+| Unit | Role |
+|------|------|
+| `router-dslite.service` | boot apply |
+| `router-dslite-refresh.service` | re-apply after WAN IPv6 change |
+
+## Configuration
+
+`/etc/routeros/router-dslite.conf` (defaults under `/usr/lib/routeros/`):
+
+```ini
+[DSLite]
+Enabled=yes
+WAN=enp2s0
+AFTR=                    # required — ISP AFTR IPv6 address
+Backend=stub             # stub | ip6tnl | jool
+TunnelInterface=ds-lite
+IPv4DefaultRoute=yes
+MTU=
+```
+
+Until `AFTR` is set, `apply` fails with a clear error (by design).
+
+## Backends
+
+| Backend | Status |
+|---------|--------|
+| `stub` | **Default.** Checks WAN GUA + AFTR; writes `/run/routeros/dslite/state`. No tunnel. |
+| `ip6tnl` | Planned: kernel `ip6tnl` + IPv4 default via tunnel. |
+| `jool` | Planned: use the `jool` package after ISP DS-Lite mode is confirmed. |
+
+## Runtime state
+
+| Path | Content |
+|------|---------|
+| `/run/routeros/dslite/status` | Ready=yes/no and last message |
+| `/run/routeros/dslite/state` | Active parameters after successful apply |
+
+## Commands
+
+```sh
+router-dslite check    # prerequisites only
+router-dslite apply    # apply (stub: state file only)
+router-dslite status
+router-dslite stop
+```
+
+## MTU / MSS
+
+DS-Lite encapsulates IPv4 in IPv6; effective MTU is lower than native IPv4.
+Set `MTU=` after path tests; coordinate MSS clamping with nftables (not owned
+by this package in the stub phase).
