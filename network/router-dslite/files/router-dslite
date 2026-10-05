@@ -24,6 +24,10 @@ fi
 local_addr=$(conf LocalAddress); local_addr=${local_addr:-}
 tun=$(conf TunnelInterface); tun=${tun:-ds-lite}
 backend=$(conf Backend); backend=${backend:-auto}
+requested_backend=$backend
+# auto is production DS-Lite: use the real tunnel backend once AFTR is available.
+# stub remains available only when explicitly selected for diagnostics.
+[ "$backend" = auto ] && backend=ip6tnl
 ipv4_default=$(conf IPv4DefaultRoute); ipv4_default=${ipv4_default:-yes}
 mtu=$(conf MTU); mtu=${mtu:-}; mss=$(conf MSSClamp); mss=${mss:-}
 b4_address=$(conf B4Address); b4_address=${b4_address:-192.0.0.2/29}
@@ -77,7 +81,7 @@ check_prereqs() {
 apply_stub() {
   mkdir -p "$run"; umask 077
   { echo "State=stub-ready"; echo "WAN=$wan"; echo "AFTR=$aftr"; echo "AFTRSource=$aftr_source"
-    echo "LocalAddress=$local_addr"; echo "TunnelInterface=$tun"; echo "RequestedBackend=$backend"
+    echo "LocalAddress=$local_addr"; echo "TunnelInterface=$tun"; echo "RequestedBackend=$requested_backend"
     echo "Backend=stub"; echo "IPv4DefaultRoute=$ipv4_default"; echo "MTU=${mtu:-}"; echo "MSSClamp=${mss:-}"
     echo "Note=tunnel not created; ip6tnl and IPv4 route are separate lifecycle stages"
   } >"$state_file.new.$$"
@@ -136,7 +140,7 @@ apply_ip6tnl() {
   apply_firewall || { rollback_ip6tnl; return 1; }
   mkdir -p "$run"; umask 077
   { echo "State=ready"; echo "WAN=$wan"; echo "AFTR=$aftr"; echo "AFTRSource=$aftr_source"
-    echo "LocalAddress=$local_addr"; echo "TunnelInterface=$tun"; echo "RequestedBackend=$backend"
+    echo "LocalAddress=$local_addr"; echo "TunnelInterface=$tun"; echo "RequestedBackend=$requested_backend"
     echo "Backend=ip6tnl"; echo "B4Address=$b4_address"; echo "MTU=${mtu:-kernel-default}"
     echo "IPv4DefaultRoute=$route_state"; echo "IPv4RouteMetric=$route_metric"
     echo "IPv4Forwarding=$forwarding_state"; echo "IPv4ForwardingPrevious=${forwarding_previous:-unset}"

@@ -45,7 +45,7 @@ cat >"$tmp/etc/router-dslite.conf" <<'EOF_CONF'
 Enabled=yes
 WAN=wan
 AFTR=2001:db8:100::20
-Backend=ip6tnl
+Backend=auto
 TunnelInterface=ds-lite
 B4Address=192.0.0.2/29
 MTU=1460

@@ -97,8 +97,8 @@ confirmed on the wire, the transix DNS adapter is the fallback.
 
 | Backend | Status |
 |---------|--------|
-| `auto` | **Default.** Selects the available skeleton backend; currently equivalent to `stub`. |
-| `stub` | Checks WAN GUA + an explicitly supplied AFTR; writes `/run/routeros/dslite/state`. No tunnel. |
+| `auto` | **Default.** Resolves to the production `ip6tnl` backend when an AFTR is available. |
+| `stub` | Diagnostic-only backend. Checks WAN GUA + AFTR and writes state; no tunnel. |
 | `ip6tnl` | Creates the kernel IPv4-in-IPv6 B4 tunnel, assigns `B4Address`, and adds a metric-scoped IPv4 default route after successful tunnel setup. |
 | `jool` | Planned: use the `jool` package after ISP DS-Lite mode is confirmed. |
 
