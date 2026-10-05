@@ -5,7 +5,8 @@ After=router-network.service network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/lib/routeros/router-dslite apply
+ExecStart=/usr/lib/routeros/router-dslite-discover
+ExecStartPost=/usr/lib/routeros/router-dslite apply
 
 [Install]
 # Wire from path units or networkd dispatcher when WAN GUA changes.

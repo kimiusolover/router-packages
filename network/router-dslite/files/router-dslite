@@ -32,7 +32,7 @@ ipv4_forwarding=$(conf IPv4Forwarding); ipv4_forwarding=${ipv4_forwarding:-yes}
 lan_interfaces=$(conf LANInterfaces); lan_interfaces=${lan_interfaces:-lan,guest,iot}
 firewall_mode=$(conf Firewall); firewall_mode=${firewall_mode:-allow}
 firewall_file=${ROUTER_DSLITE_FIREWALL_FILE:-$run/routeros-dslite.nft}
-auto_discovery_note="AFTR discovery is pending (DHCPv6 option 64)"
+auto_discovery_note="AFTR discovery requires DHCPv6 option 64 or transix DNS fallback"
 write_status() {
   mkdir -p "$run"; umask 077
   { echo "Enabled=$enabled"; echo "WAN=$wan"; echo "AFTR=$aftr"

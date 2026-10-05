@@ -8,6 +8,7 @@ Before=router-network-ready.target
 
 [Service]
 Type=oneshot
+ExecStartPre=/usr/lib/routeros/router-dslite-discover
 ExecStart=/usr/lib/routeros/router-dslite apply
 ExecStop=/usr/lib/routeros/router-dslite stop
 RemainAfterExit=yes

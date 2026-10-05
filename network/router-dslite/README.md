@@ -48,33 +48,49 @@ LANInterfaces=lan,guest,iot
 Firewall=allow
 ```
 
-`AFTR` is optional because BB.excite光 MEC does not require manual AFTR input. When it is empty, the skeleton records that automatic discovery is pending; `apply` waits for a resolved AFTR rather than hard-coding a provider endpoint.
+`AFTR` is optional because BB.excite光 MEC does not require manual AFTR input. When it is empty, the discovery orchestrator tries DHCPv6 Option 64 and then transix DNS; `apply` waits for a resolved AFTR rather than hard-coding a provider endpoint.
 
 ## AFTR discovery
 
-The DHCPv6 client is responsible for requesting RFC 6334 `OPTION_AFTR_NAME`
-(option 64). A client hook writes the returned FQDN to
-`/run/routeros/dslite/aftr-name`; `router-dslite-discover` validates the name,
-resolves one global AAAA record over IPv6, verifies the route through `WAN`,
-and atomically writes `/run/routeros/dslite/aftr`.
-
-The discovery adapter does not parse DHCPv6 packets itself. This keeps the
-DHCPv6 client integration replaceable and prevents provider-specific AFTR
-addresses from being hard-coded. `router-dslite-discover.path` reruns the
-adapter when the hook changes `aftr-name`; a successful discovery then runs
-the current skeleton apply path.
+The discovery orchestrator uses this priority:
 
 ```text
-DHCPv6 client option 64 hook
-  → /run/routeros/dslite/aftr-name
-  → router-dslite-discover.service
-  → /run/routeros/dslite/aftr
-  → router-dslite apply (stub or ip6tnl; route is added only after tunnel setup)
+1. Explicit AFTR=
+2. DHCPv6 RFC 6334 OPTION_AFTR_NAME=64
+3. transix DNS AAAA for gw.transix.jp
+4. Last-known-good AFTR while its TTL is valid
+5. Stop DS-Lite if no valid AFTR remains
 ```
 
-Discovery state is written to `/run/routeros/dslite/discovery-status`. An
-invalid FQDN, missing AAAA, or unreachable endpoint removes the previous
-resolved AFTR and fails closed.
+The implementation is split into adapters:
+
+| Program | Responsibility |
+|---------|----------------|
+| `router-dslite-discover` | Priority, validation, atomic state, TTL cache and fail-closed behavior |
+| `router-dslite-discover-dhcp6` | Validate the DHCPv6 hook's AFTR FQDN and resolve its AAAA record |
+| `router-dslite-discover-transix` | Query all `gw.transix.jp` AAAA records, preserve DNS order, capture TTL, and select the first WAN-routed candidate |
+
+The transix adapter does not hard-code `gw.transix.jp` addresses and does not use
+the unverified `4over6.info TXT → setup46` mechanism. The router's DNS resolver
+is used through `dig`; a DNS answer is only a candidate until it is a global
+IPv6 address with a route through the configured WAN. The later DS-Lite tunnel
+apply remains the final end-to-end validation.
+
+The selected AFTR and metadata are written atomically to:
+
+```text
+/run/routeros/dslite/aftr
+/run/routeros/dslite/aftr-meta
+/run/routeros/dslite/discovery-status
+```
+
+A transient discovery failure does not tear down an active tunnel when the
+last-known-good entry is still within its TTL. Once the cache expires, the
+orchestrator removes the AFTR state and stops the DS-Lite lifecycle.
+
+RFC 6334 requires a conforming DHCPv6 client to include option 64 in its
+Option Request Option. If a Reply still has no AFTR-Name after that request is
+confirmed on the wire, the transix DNS adapter is the fallback.
 
 ## Backends
 

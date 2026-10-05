@@ -3,53 +3,80 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 files="$root/network/router-dslite/files"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$tmp/bin" "$tmp/etc" "$tmp/run"
+mkdir -p "$tmp/bin" "$tmp/run" "$tmp/etc"
+cat >"$tmp/bin/ip" <<'MOCK'
+#!/usr/bin/env bash
+case "$*" in
+  *"route get 2001:db8:100::20 oif wan"*|*"route get 2001:db8:100::21 oif wan"*|*"route get 2001:db8:100::22 oif wan"*) exit 0 ;;
+  *) exit 1 ;;
+esac
+MOCK
 cat >"$tmp/bin/getent" <<'MOCK'
 #!/usr/bin/env bash
 [ "$1" = ahostsv6 ] || exit 1
 printf '2001:db8:100::20 STREAM aftr.mec.example\n'
 MOCK
-cat >"$tmp/bin/ip" <<'MOCK'
+cat >"$tmp/bin/dhcp6" <<'MOCK'
 #!/usr/bin/env bash
-case "$*" in
-  *"route get 2001:db8:100::20 oif wan"*) exit 0 ;;
-  *) exit 1 ;;
-esac
+[ -e "$ROUTER_DSLITE_RUN/dhcp-fail" ] && exit 1
+printf 'Name=aftr.mec.example\nAddress=2001:db8:100::20\nTTL=300\n'
 MOCK
-chmod +x "$tmp/bin/getent" "$tmp/bin/ip"
-env=(env PATH="$tmp/bin:$PATH" ROUTER_DSLITE_RUN="$tmp/run" ROUTER_DSLITE_DISCOVERY_WAN=wan ROUTER_DSLITE_AFTR_NAME_FILE="$tmp/run/aftr-name" ROUTER_DSLITE_AFTR_FILE="$tmp/run/aftr" ROUTER_DSLITE_DISCOVERY_STATUS="$tmp/run/discovery-status")
-printf 'aftr.mec.example.\n' >"$tmp/run/aftr-name"
-"${env[@]}" "$files/router-dslite-discover" >/dev/null 2>&1
-grep -qx '2001:db8:100::20' "$tmp/run/aftr"
-grep -qx 'Name=aftr.mec.example' "$tmp/run/discovery-status"
-grep -qx 'Source=dhcpv6-option-64' "$tmp/run/discovery-status"
-cat >"$tmp/run/aftr-name" <<'EOF_BAD'
-not a valid name
-EOF_BAD
-if "${env[@]}" "$files/router-dslite-discover" >/dev/null 2>&1; then
-  echo 'discovery accepted an invalid AFTR name' >&2; exit 1
-fi
-test ! -e "$tmp/run/aftr"
-grep -qx 'Ready=no' "$tmp/run/discovery-status"
-# The lifecycle consumes a discovered endpoint when AFTR= is intentionally empty.
+cat >"$tmp/bin/transix" <<'MOCK'
+#!/usr/bin/env bash
+[ -e "$ROUTER_DSLITE_RUN/transix-fail" ] && exit 1
+printf 'Name=gw.transix.jp\nAddress=2001:db8:100::21\nTTL=60\nExpiresAt=%s\n' "$(( $(date +%s) + 60 ))"
+MOCK
+cat >"$tmp/bin/dig" <<'MOCK'
+#!/usr/bin/env bash
+# Accept -6 +noall +answer and return owner/TTL/type/address fields.
+cat <<'EOF_DNS'
+gw.transix.jp. 86400 IN AAAA 2001:db8:100::22
+gw.transix.jp. 86400 IN AAAA 2001:db8:100::20
+gw.transix.jp. 86400 IN AAAA 2001:db8:100::21
+EOF_DNS
+MOCK
+cat >"$tmp/bin/stop" <<'MOCK'
+#!/usr/bin/env bash
+echo stopped >"$ROUTER_DSLITE_RUN/stopped"
+MOCK
+chmod +x "$tmp/bin/"*
+# The transix adapter preserves DNS order, captures TTL, and validates the first routed candidate.
+env PATH="$tmp/bin:$PATH" ROUTER_DSLITE_RUN="$tmp/run" ROUTER_DSLITE_DISCOVERY_WAN=wan ROUTER_DSLITE_DIG="$tmp/bin/dig" "$files/router-dslite-discover-transix" >"$tmp/transix-candidate"
+grep -qx 'Address=2001:db8:100::22' "$tmp/transix-candidate"
+grep -qx 'TTL=86400' "$tmp/transix-candidate"
 cat >"$tmp/etc/router-dslite.conf" <<'EOF_CONF'
 Enabled=yes
 WAN=wan
 AFTR=
-Backend=auto
 EOF_CONF
-cat >"$tmp/bin/ip" <<'MOCK'
-#!/usr/bin/env bash
-case "$*" in
-  *"link show dev wan"*) echo '2: wan: <UP> mtu 1500 state UP' ;;
-  *"addr show dev wan scope global"*) echo '2: wan inet6 2001:db8:1::2/64 scope global' ;;
-  *) exit 0 ;;
-esac
-MOCK
-chmod +x "$tmp/bin/ip"
-printf '2001:db8:100::20\n' >"$tmp/run/aftr"
-main_env=(env PATH="$tmp/bin:$PATH" ROUTER_DSLITE_LIB="$tmp/lib" ROUTER_DSLITE_ETC="$tmp/etc" ROUTER_DSLITE_RUN="$tmp/run" ROUTER_DSLITE_CONFIG="$tmp/etc/router-dslite.conf" ROUTER_DSLITE_AFTR_FILE="$tmp/run/aftr")
-"${main_env[@]}" "$files/router-dslite" apply >/dev/null 2>&1
-grep -qx 'AFTRSource=discovered' "$tmp/run/state"
-grep -qx 'AFTR=2001:db8:100::20' "$tmp/run/state"
-echo 'router-dslite AFTR discovery validates option-64 FQDN, resolves AAAA, and feeds lifecycle state'
+env=(env PATH="$tmp/bin:$PATH" ROUTER_DSLITE_RUN="$tmp/run" ROUTER_DSLITE_ETC="$tmp/etc" ROUTER_DSLITE_CONFIG="$tmp/etc/router-dslite.conf" ROUTER_DSLITE_DISCOVERY_WAN=wan ROUTER_DSLITE_DISCOVER_DHCP6="$tmp/bin/dhcp6" ROUTER_DSLITE_DISCOVER_TRANSIX="$tmp/bin/transix" ROUTER_DSLITE_STOP_CMD="$tmp/bin/stop")
+# DHCPv6 Option 64 has priority over transix DNS.
+printf 'aftr.mec.example.\n' >"$tmp/run/aftr-name"
+"${env[@]}" "$files/router-dslite-discover" >/dev/null
+grep -qx '2001:db8:100::20' "$tmp/run/aftr"
+grep -qx 'Source=dhcpv6-option-64' "$tmp/run/aftr-meta"
+grep -qx 'Source=dhcpv6-option-64' "$tmp/run/discovery-status"
+# When Option 64 fails, transix DNS candidates are used.
+touch "$tmp/run/dhcp-fail"
+"${env[@]}" "$files/router-dslite-discover" >/dev/null
+grep -qx '2001:db8:100::21' "$tmp/run/aftr"
+grep -qx 'Source=transix-dns-gw' "$tmp/run/aftr-meta"
+grep -qx 'TTL=60' "$tmp/run/aftr-meta"
+# A transient discovery failure retains a TTL-valid last-known-good AFTR.
+touch "$tmp/run/transix-fail"
+"${env[@]}" "$files/router-dslite-discover" >/dev/null
+grep -qx '2001:db8:100::21' "$tmp/run/aftr"
+grep -qx 'Source=cache' "$tmp/run/discovery-status"
+test ! -e "$tmp/run/stopped"
+# Expired cache fails closed and asks the lifecycle to stop.
+sed -i "s/^ExpiresAt=.*/ExpiresAt=$(( $(date +%s) - 1 ))/" "$tmp/run/aftr-meta"
+if "${env[@]}" "$files/router-dslite-discover" >/dev/null 2>&1; then
+  echo 'expired AFTR cache was accepted' >&2; exit 1
+fi
+grep -qx 'Ready=no' "$tmp/run/discovery-status"
+test -e "$tmp/run/stopped"
+test ! -e "$tmp/run/aftr"
+# The DHCPv6 adapter validates FQDN, AAAA, and WAN route independently.
+printf 'aftr.mec.example.\n' >"$tmp/run/aftr-name"
+"${env[@]}" ROUTER_DSLITE_DISCOVER_DHCP6="$files/router-dslite-discover-dhcp6" "$files/router-dslite-discover-dhcp6" >/dev/null
+echo 'router-dslite discovery priority, transix fallback, TTL cache, and fail-closed expiry are valid'
