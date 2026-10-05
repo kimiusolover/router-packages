@@ -26,8 +26,15 @@ cat >"$tmp/bin/transix" <<'MOCK'
 [ -e "$ROUTER_DSLITE_RUN/transix-fail" ] && exit 1
 printf 'Name=gw.transix.jp\nAddress=2001:db8:100::21\nTTL=60\nExpiresAt=%s\n' "$(( $(date +%s) + 60 ))"
 MOCK
+cat >"$tmp/bin/resolvectl" <<'MOCK'
+#!/usr/bin/env bash
+[ "$1" = dns ] && [ "$2" = wan ] || exit 1
+printf 'Link 2 (wan): 2001:db8:1::53 2001:db8:2::53\n'
+MOCK
 cat >"$tmp/bin/dig" <<'MOCK'
 #!/usr/bin/env bash
+echo "$*" >>"$ROUTER_DSLITE_DIG_LOG"
+case "$*" in *@2001:db8:1::* ) exit 1 ;; esac
 # Accept -6 +noall +answer and return owner/TTL/type/address fields.
 cat <<'EOF_DNS'
 gw.transix.jp. 86400 IN AAAA 2001:db8:100::22
@@ -41,14 +48,17 @@ echo stopped >"$ROUTER_DSLITE_RUN/stopped"
 MOCK
 chmod +x "$tmp/bin/"*
 # The transix adapter preserves DNS order, captures TTL, and validates the first routed candidate.
-env PATH="$tmp/bin:$PATH" ROUTER_DSLITE_RUN="$tmp/run" ROUTER_DSLITE_DISCOVERY_WAN=wan ROUTER_DSLITE_DIG="$tmp/bin/dig" "$files/router-dslite-discover-transix" >"$tmp/transix-candidate"
+env PATH="$tmp/bin:$PATH" ROUTER_DSLITE_RUN="$tmp/run" ROUTER_DSLITE_DISCOVERY_WAN=wan ROUTER_DSLITE_DIG="$tmp/bin/dig" ROUTER_DSLITE_DIG_LOG="$tmp/dig.log" "$files/router-dslite-discover-transix" >"$tmp/transix-candidate"
 grep -qx 'Address=2001:db8:100::22' "$tmp/transix-candidate"
 grep -qx 'TTL=86400' "$tmp/transix-candidate"
+grep -Fq '@2001:db8:1::53' "$tmp/dig.log"
+grep -Fq '@2001:db8:2::53' "$tmp/dig.log"
 cat >"$tmp/etc/router-dslite.conf" <<'EOF_CONF'
 Enabled=yes
 WAN=wan
 AFTR=
 EOF_CONF
+export ROUTER_DSLITE_DIG_LOG="$tmp/dig.log"
 env=(env PATH="$tmp/bin:$PATH" ROUTER_DSLITE_RUN="$tmp/run" ROUTER_DSLITE_ETC="$tmp/etc" ROUTER_DSLITE_CONFIG="$tmp/etc/router-dslite.conf" ROUTER_DSLITE_DISCOVERY_WAN=wan ROUTER_DSLITE_DISCOVER_DHCP6="$tmp/bin/dhcp6" ROUTER_DSLITE_DISCOVER_TRANSIX="$tmp/bin/transix" ROUTER_DSLITE_STOP_CMD="$tmp/bin/stop")
 # DHCPv6 Option 64 has priority over transix DNS.
 printf 'aftr.mec.example.\n' >"$tmp/run/aftr-name"

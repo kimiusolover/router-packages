@@ -71,10 +71,11 @@ The implementation is split into adapters:
 | `router-dslite-discover-transix` | Query all `gw.transix.jp` AAAA records, preserve DNS order, capture TTL, and select the first WAN-routed candidate |
 
 The transix adapter does not hard-code `gw.transix.jp` addresses and does not use
-the unverified `4over6.info TXT → setup46` mechanism. The router's DNS resolver
-is used through `dig`; a DNS answer is only a candidate until it is a global
+the unverified `4over6.info TXT → setup46` mechanism. The adapter first obtains DNS servers associated with the WAN using `resolvectl dns <WAN>`, then queries each server explicitly with `dig -6 @<DNS>`. It tries the next configured DNS server when a query fails. A DNS answer is only a candidate until it is a global
 IPv6 address with a route through the configured WAN. The later DS-Lite tunnel
 apply remains the final end-to-end validation.
+
+The discovery service only discovers and writes state. The DS-Lite service performs the single `apply`; the path-triggered refresh service performs discovery followed by apply.
 
 The selected AFTR and metadata are written atomically to:
 

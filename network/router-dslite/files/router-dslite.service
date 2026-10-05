@@ -1,14 +1,13 @@
 [Unit]
 Description=RouterOS DS-Lite (IPv4 over IPv6)
 Documentation=file:///usr/lib/routeros/router-dslite.conf
-After=router-network.service network-online.target
-Wants=network-online.target
+After=router-network.service network-online.target router-dslite-discover.service
+Wants=network-online.target router-dslite-discover.service
 # DS-Lite is independent of DHCPv6-PD / router-prefix / NAT66.
 Before=router-network-ready.target
 
 [Service]
 Type=oneshot
-ExecStartPre=/usr/lib/routeros/router-dslite-discover
 ExecStart=/usr/lib/routeros/router-dslite apply
 ExecStop=/usr/lib/routeros/router-dslite stop
 RemainAfterExit=yes

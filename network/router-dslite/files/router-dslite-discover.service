@@ -2,8 +2,8 @@
 Description=RouterOS DS-Lite AFTR discovery
 After=network-online.target
 Wants=network-online.target
+Before=router-dslite.service
 
 [Service]
 Type=oneshot
 ExecStart=/usr/lib/routeros/router-dslite-discover
-ExecStartPost=/usr/lib/routeros/router-dslite apply
