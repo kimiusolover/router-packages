@@ -5,14 +5,16 @@ test_root=$(mktemp -d); trap 'rm -rf "$test_root"' EXIT
 cc -O2 -Wall -Wextra -Werror "$files/prefix-generator.c" -o "$test_root/prefix-generator"
 generated=$($test_root/prefix-generator)
 [[ $generated =~ ^fd[0-9a-f]{2}:[0-9a-f]{4}:[0-9a-f]{4}::/48$ ]]
-mkdir -p "$test_root/lib" "$test_root/etc" "$test_root/state" "$test_root/run"
+mkdir -p "$test_root/lib" "$test_root/etc" "$test_root/state" "$test_root/run" "$test_root/network"
 cp "$test_root/prefix-generator" "$test_root/lib/prefix-generator"
 cp "$files/prefix-manager" "$test_root/lib/prefix-manager"
 cp "$files/prefix-apply" "$test_root/lib/prefix-apply"
 cp "$files/write-delegated" "$test_root/lib/write-delegated"
 cp "$files/prefix.conf" "$test_root/etc/prefix.conf"
 chmod +x "$test_root/lib/prefix-manager" "$test_root/lib/prefix-apply" "$test_root/lib/write-delegated" "$test_root/lib/prefix-generator"
-prefix_env=(env ROUTER_PREFIX_LIB="$test_root/lib" ROUTER_PREFIX_ETC="$test_root/etc" ROUTER_PREFIX_STATE="$test_root/state" ROUTER_PREFIX_RUN="$test_root/run")
+printf 'lan=br-lan\nguest=guest\niot=iot\n' >"$test_root/network/prefix-map"
+printf 'lan\nguest\niot\n' >"$test_root/network/prefix-required"
+prefix_env=(env ROUTER_NETWORK_RUN="$test_root/network" ROUTER_PREFIX_LIB="$test_root/lib" ROUTER_PREFIX_ETC="$test_root/etc" ROUTER_PREFIX_STATE="$test_root/state" ROUTER_PREFIX_RUN="$test_root/run")
 
 "${prefix_env[@]}" "$test_root/lib/prefix-manager" ensure
 ula=$(sed -n 's/^Prefix=//p' "$test_root/state/ula")
@@ -40,8 +42,12 @@ grep -qx 'NATRequired=no' <<<"$status"
 grep -qx 'lan=2001:db8:1234:1::/64' <<<"$status"
 
 "${prefix_env[@]}" ROUTER_PREFIX_NETWORKD_RUN="$test_root/networkd" "$test_root/lib/prefix-apply" apply
-grep -qx 'Prefix=2001:db8:1234:1::/64' "$test_root/networkd/20-routeros-lan.network.d/50-prefix.conf"
+grep -qx 'Prefix=2001:db8:1234:1::/64' "$test_root/networkd/20-routeros-br-lan.network.d/50-prefix.conf"
 test -f "$test_root/networkd/20-routeros-guest.network.d/50-prefix.conf"
+# Missing required mapping is a hard error; there is no logical-name fallback.
+sed -i '/^guest=/d' "$test_root/network/prefix-map"
+if "${prefix_env[@]}" ROUTER_PREFIX_NETWORKD_RUN="$test_root/networkd-missing" "$test_root/lib/prefix-apply" apply >/dev/null 2>&1; then echo "missing prefix-map mapping was accepted" >&2; exit 1; fi
+printf 'guest=guest\n' >>"$test_root/network/prefix-map"
 sed -i '/^guest=2$/d' "$test_root/etc/prefix.conf"
 "${prefix_env[@]}" ROUTER_PREFIX_NETWORKD_RUN="$test_root/networkd" "$test_root/lib/prefix-apply" apply
 test ! -e "$test_root/networkd/20-routeros-guest.network.d"

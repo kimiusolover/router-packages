@@ -1,6 +1,7 @@
 [Unit]
 Description=RouterOS DS-Lite (IPv4 over IPv6)
 Documentation=file:///usr/lib/routeros/router-dslite.conf
+Requires=router-network.service
 After=router-network.service network-online.target router-dslite-discover.service
 Wants=network-online.target router-dslite-discover.service
 # DS-Lite is independent of DHCPv6-PD / router-prefix / NAT66.

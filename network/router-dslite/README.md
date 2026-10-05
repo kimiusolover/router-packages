@@ -108,7 +108,7 @@ For `Backend=ip6tnl`, a successful tunnel and route setup then enables
 `net.ipv4.ip_forward=1`. The previous sysctl value is recorded in state and
 restored by `router-dslite stop`; a failed later step rolls it back.
 
-The default LAN set follows `router-network`: `lan,guest,iot`. The package owns
+The default LAN set is logical: `lan,guest,iot`. At apply time these names are resolved through `/run/routeros/network/prefix-map`, so the firewall uses `br-lan,guest,iot` after bridge topology is active. The package owns
 only the `inet routeros_dslite` nftables table. Its stateful rules allow:
 
 ```text
@@ -124,7 +124,7 @@ The package does **not** add IPv4 masquerade: DS-Lite IPv4 NAT belongs to the
 AFTR, while `router-ipv6-nat` independently handles IPv6 NAT66.
 
 The implementation records `IPv4Forwarding=configured`, `Firewall=configured`,
-and `LANInterfaces=...` in `/run/routeros/dslite/state`. It does not claim
+and both logical `LANInterfaces=...` and resolved `LANLinuxInterfaces=...` in `/run/routeros/dslite/state`. It does not claim
 IPv4 Internet connectivity until the router itself and each LAN VLAN are
 validated against a real AFTR.
 

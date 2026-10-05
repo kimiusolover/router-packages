@@ -36,6 +36,8 @@ ipv4_forwarding=$(conf IPv4Forwarding); ipv4_forwarding=${ipv4_forwarding:-yes}
 lan_interfaces=$(conf LANInterfaces); lan_interfaces=${lan_interfaces:-lan,guest,iot}
 firewall_mode=$(conf Firewall); firewall_mode=${firewall_mode:-allow}
 firewall_file=${ROUTER_DSLITE_FIREWALL_FILE:-$run/routeros-dslite.nft}
+network_run=${ROUTER_NETWORK_RUN:-/run/routeros/network}
+prefix_map=${ROUTER_PREFIX_NETWORK_MAP:-$network_run/prefix-map}
 auto_discovery_note="AFTR discovery requires DHCPv6 option 64 or transix DNS fallback"
 write_status() {
   mkdir -p "$run"; umask 077
@@ -145,6 +147,7 @@ apply_ip6tnl() {
     echo "IPv4DefaultRoute=$route_state"; echo "IPv4RouteMetric=$route_metric"
     echo "IPv4Forwarding=$forwarding_state"; echo "IPv4ForwardingPrevious=${forwarding_previous:-unset}"
     echo "Firewall=$firewall_state"; echo "LANInterfaces=$lan_interfaces"
+    echo "LANLinuxInterfaces=${lan_linux_interfaces[*]:-}"
     echo "Note=LAN IPv4 forwarding to DS-Lite; no IPv4 masquerade"
   } >"$state_file.new.$$"
   mv -f "$state_file.new.$$" "$state_file"
@@ -182,6 +185,21 @@ valid_lan_interfaces() {
   done
   [ "$count" -gt 0 ]
 }
+resolve_lan_interfaces() {
+  [ -r "$prefix_map" ] || { write_status no "prefix-map is required for DS-Lite firewall"; return 1; }
+  local logical iface item old_ifs=$IFS
+  lan_linux_interfaces=()
+  IFS=,
+  read -ra lan_array <<<"$lan_interfaces"
+  IFS=$old_ifs
+  for logical in "${lan_array[@]}"; do
+    iface=$(awk -F= -v key="$logical" '$1 == key { print $2; found=1; exit } END { if (!found) exit 1 }' "$prefix_map") || {
+      write_status no "prefix-map is missing LAN allocation: $logical"; return 1;
+    }
+    [[ "$iface" =~ ^[a-z][a-z0-9-]{0,14}$ ]] || { write_status no "prefix-map has invalid interface: $logical=$iface"; return 1; }
+    lan_linux_interfaces+=("$iface")
+  done
+}
 apply_firewall() {
   firewall_state=not-configured
   if [ "$firewall_mode" = disabled ] || [ "$firewall_mode" = no ]; then
@@ -194,13 +212,11 @@ apply_firewall() {
     write_status no "nft is missing for DS-Lite firewall"; return 1;
   }
   valid_lan_interfaces || {
-    write_status no "LANInterfaces contains an invalid interface"; return 1;
+    write_status no "LANInterfaces contains an invalid logical allocation"; return 1;
   }
-  local old_ifs=$IFS item lan_set= first=yes
-  IFS=,
-  read -ra lan_array <<<"$lan_interfaces"
-  IFS=$old_ifs
-  for item in "${lan_array[@]}"; do
+  resolve_lan_interfaces || return 1
+  local item lan_set= first=yes
+  for item in "${lan_linux_interfaces[@]}"; do
     if [ "$first" = yes ]; then first=no; else lan_set+=", "; fi
     lan_set+="\"$item\""
   done

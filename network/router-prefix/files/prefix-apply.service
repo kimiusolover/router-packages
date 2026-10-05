@@ -1,6 +1,7 @@
 [Unit]
 Description=Apply RouterOS IPv6 Prefix Runtime Configuration
-After=prefix-manager.service
+Requires=router-network.service
+After=router-network.service prefix-manager.service
 Wants=prefix-manager.service
 
 [Service]

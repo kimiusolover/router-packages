@@ -1,23 +1,57 @@
 #!/usr/bin/env bash
 set -euo pipefail
-lib=${ROUTER_PREFIX_LIB:-/usr/lib/routeros}; run=${ROUTER_PREFIX_RUN:-/run/routeros/prefix}
+lib=${ROUTER_PREFIX_LIB:-/usr/lib/routeros}
+run=${ROUTER_PREFIX_RUN:-/run/routeros/prefix}
 networkd=${ROUTER_PREFIX_NETWORKD_RUN:-/run/systemd/network}
+network_run=${ROUTER_NETWORK_RUN:-/run/routeros/network}
+map_file=${ROUTER_PREFIX_NETWORK_MAP:-$network_run/prefix-map}
+required_file=${ROUTER_PREFIX_REQUIRED_MAP:-$network_run/prefix-required}
 [ "${1:-}" = apply ] || { echo "usage: prefix-apply apply" >&2; exit 64; }
-"$lib/prefix-manager" ensure; mkdir -p "$networkd"
+"$lib/prefix-manager" ensure
+[ -r "$map_file" ] || { echo "prefix-apply: required prefix-map is missing: $map_file" >&2; exit 65; }
+[ -r "$required_file" ] || { echo "prefix-apply: required prefix mapping state is missing: $required_file" >&2; exit 65; }
+mkdir -p "$networkd"
+
+declare -A mapping=() required=() used_interfaces=()
+valid_name() { [[ ${1:-} =~ ^[a-z][a-z0-9-]{0,14}$ ]]; }
+while IFS='=' read -r logical iface; do
+  [ -n "${logical:-}" ] || continue
+  valid_name "$logical" && valid_name "$iface" || { echo "prefix-apply: invalid prefix-map entry: $logical=$iface" >&2; exit 65; }
+  [ -z "${mapping[$logical]+x}" ] || { echo "prefix-apply: duplicate logical allocation: $logical" >&2; exit 65; }
+  [ -z "${used_interfaces[$iface]+x}" ] || { echo "prefix-apply: duplicate Linux interface mapping: $iface" >&2; exit 65; }
+  mapping[$logical]=$iface; used_interfaces[$iface]=1
+done <"$map_file"
+while IFS= read -r logical; do
+  [ -n "$logical" ] || continue
+  valid_name "$logical" || { echo "prefix-apply: invalid required allocation: $logical" >&2; exit 65; }
+  required[$logical]=1
+done <"$required_file"
+for logical in "${!required[@]}"; do
+  [ -n "${mapping[$logical]+x}" ] || { echo "prefix-apply: required mapping is missing: $logical" >&2; exit 65; }
+done
+
 if [ -r "$run/networkd-directories" ]; then
   while IFS= read -r directory; do
-    [[ $directory =~ ^20-routeros-[a-z][a-z0-9-]*\.network\.d$ ]] || {
-      echo "invalid managed networkd directory: $directory" >&2; exit 65;
-    }
+    [[ $directory =~ ^20-routeros-[a-z][a-z0-9-]*\.network\.d$ ]] || { echo "invalid managed networkd directory: $directory" >&2; exit 65; }
     rm -rf "$networkd/$directory"
   done <"$run/networkd-directories"
 fi
 : >"$run/networkd-directories.new.$$"
-while IFS='=' read -r network prefix; do
-  directory="$networkd/20-routeros-$network.network.d"; mkdir -p "$directory"
+while IFS='=' read -r logical prefix; do
+  [ -n "${logical:-}" ] || continue
+  valid_name "$logical" || { echo "prefix-apply: invalid allocation name: $logical" >&2; exit 65; }
+  [ -n "${prefix:-}" ] || { echo "prefix-apply: empty prefix for $logical" >&2; exit 65; }
+  iface=${mapping[$logical]-}
+  if [ -z "$iface" ]; then
+    # Allocations such as vpn remain in the registry until their topology exists.
+    # They are intentionally not turned into Linux configuration without a map entry.
+    echo "prefix-apply: skipping unmapped optional allocation: $logical" >&2
+    continue
+  fi
+  directory="$networkd/20-routeros-$iface.network.d"; mkdir -p "$directory"
   printf '%s\n' "${directory##*/}" >>"$run/networkd-directories.new.$$"
   gateway="${prefix%/*}"; gateway="${gateway%::*}::1/64"
-  cat >"$directory/50-prefix.conf" <<EOF
+  cat >"$directory/50-prefix.conf" <<EOF_CONF
 [Network]
 IPv6SendRA=yes
 
@@ -31,6 +65,6 @@ RouterLifetimeSec=1800
 Prefix=$prefix
 PreferredLifetimeSec=1800
 ValidLifetimeSec=3600
-EOF
+EOF_CONF
 done <"$run/allocations"
 mv -f "$run/networkd-directories.new.$$" "$run/networkd-directories"
