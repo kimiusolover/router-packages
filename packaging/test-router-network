@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+files="$root/network/router-network/files"
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/bin" "$tmp/run" "$tmp/state" "$tmp/networkd"
+cat >"$tmp/bin/networkctl" <<'MOCK'
+#!/usr/bin/env bash
+echo "$*" >>"$ROUTER_NETWORKCTL_LOG"
+exit 0
+MOCK
+chmod +x "$tmp/bin/networkctl"
+cat >"$tmp/discovery" <<'EOF_DISCOVERY'
+[WAN]
+Role=wan
+Interface=enp2s0
+Path=pci-0000:02:00.0
+EOF_DISCOVERY
+cat >"$tmp/network.conf" <<'EOF_CONF'
+[Network]
+VLANs=10,20,30,40
+[Bridge:br-lan]
+Name=br-lan
+Address=192.168.10.1/24
+Ports=wlan0
+[VLAN:10]
+Name=lan
+Bridge=br-lan
+[VLAN:20]
+Name=guest
+Address=192.168.20.1/24
+[VLAN:30]
+Name=iot
+Address=192.168.30.1/24
+[VLAN:40]
+Name=old
+EOF_CONF
+export ROUTER_NETWORKCTL_LOG="$tmp/networkctl.log"
+env=(env PATH="$tmp/bin:$PATH" ROUTER_NETWORK_DISCOVERY="$tmp/discovery" ROUTER_NETWORK_CONFIG="$tmp/network.conf" ROUTER_NETWORK_RUN="$tmp/networkd" ROUTER_NETWORK_STATE="$tmp/state" ROUTER_NETWORK_RELOAD=yes)
+"${env[@]}" "$files/router-network" apply >/dev/null
+test -f "$tmp/networkd/20-routeros-br-lan.netdev"
+grep -qx 'Kind=bridge' "$tmp/networkd/20-routeros-br-lan.netdev"
+grep -qx 'Address=192.168.10.1/24' "$tmp/networkd/20-routeros-br-lan.network"
+! grep -q '^Address=' "$tmp/networkd/20-routeros-lan.network"
+grep -qx 'Bridge=br-lan' "$tmp/networkd/20-routeros-lan.network"
+grep -qx 'Bridge=br-lan' "$tmp/networkd/20-routeros-wlan0.network"
+grep -qx 'Address=192.168.20.1/24' "$tmp/networkd/20-routeros-guest.network"
+grep -qx 'Address=192.168.30.1/24' "$tmp/networkd/20-routeros-iot.network"
+grep -qx 'lan=br-lan' "$tmp/state/prefix-map"
+grep -qx 'guest=guest' "$tmp/state/prefix-map"
+grep -qx 'iot=iot' "$tmp/state/prefix-map"
+! grep -q '^vpn=' "$tmp/state/prefix-map"
+# A topology change removes stale generated files and rewrites the map atomically.
+sed -i '/VLANs=/s/10,20,30,40/10,20,30/' "$tmp/network.conf"
+"${env[@]}" "$files/router-network" apply >/dev/null
+test ! -e "$tmp/networkd/20-routeros-old.network"
+! grep -q '^old=' "$tmp/state/prefix-map"
+echo 'router-network bridge topology, prefix-map, and stale cleanup are valid'

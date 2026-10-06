@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Discover transix AFTR candidates from DNS; no AFTR address is hard-coded.
+# This intentionally does not use the unverified 4over6.info/setup46 path.
+set -euo pipefail
+run=${ROUTER_DSLITE_RUN:-/run/routeros/dslite}
+wan=${ROUTER_DSLITE_DISCOVERY_WAN:-enp2s0}
+name=${ROUTER_DSLITE_TRANSIX_AFTR_NAME:-gw.transix.jp}
+dig_cmd=${ROUTER_DSLITE_DIG:-dig}
+fail() { echo "router-dslite transix discovery: $*" >&2; exit 1; }
+command -v "$dig_cmd" >/dev/null || fail 'dig is required for DNS TTL-aware discovery'
+dns_servers=${ROUTER_DSLITE_DNS_SERVERS:-}
+if [ -z "$dns_servers" ]; then
+  command -v resolvectl >/dev/null || fail 'resolvectl is required to obtain WAN DNS servers'
+  dns_servers=$(resolvectl dns "$wan" 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9A-Fa-f]+:[0-9A-Fa-f:]+$' || true)
+fi
+[ -n "$dns_servers" ] || fail "no DNS servers associated with WAN $wan"
+while read -r dns; do
+  [ -n "$dns" ] || continue
+  answers=$("$dig_cmd" -6 "@$dns" +noall +answer "$name" AAAA 2>/dev/null) || continue
+  while read -r owner ttl class type address rest; do
+    [ "$type" = AAAA ] || continue
+    case "$ttl" in ''|*[!0-9]*) continue ;; esac
+    case "$address" in fe80:*|fc*|fd*|::1|*[!0-9A-Fa-f:]*|*::*::* ) continue ;; esac
+    ip -6 route get "$address" oif "$wan" >/dev/null 2>&1 || continue
+    now=$(date +%s)
+    expires=$((now + ttl))
+    printf 'Name=%s\nAddress=%s\nTTL=%s\nExpiresAt=%s\n' "$name" "$address" "$ttl" "$expires"
+    exit 0
+  done <<<"$answers"
+done <<<"$dns_servers"
+fail "no usable global AAAA route through WAN $wan"

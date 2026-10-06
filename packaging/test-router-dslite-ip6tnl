@@ -3,7 +3,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 files="$root/network/router-dslite/files"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$tmp/bin" "$tmp/etc" "$tmp/run"
+mkdir -p "$tmp/bin" "$tmp/etc" "$tmp/run" "$tmp/network"
 cat >"$tmp/bin/ip" <<'MOCK'
 #!/usr/bin/env bash
 echo "$*" >>"$ROUTER_DSLITE_IP_LOG"
@@ -45,7 +45,7 @@ cat >"$tmp/etc/router-dslite.conf" <<'EOF_CONF'
 Enabled=yes
 WAN=wan
 AFTR=2001:db8:100::20
-Backend=ip6tnl
+Backend=auto
 TunnelInterface=ds-lite
 B4Address=192.0.0.2/29
 MTU=1460
@@ -54,7 +54,8 @@ EOF_CONF
 export ROUTER_DSLITE_IP_LOG="$tmp/ip.log"
 export ROUTER_DSLITE_SYSCTL_LOG="$tmp/sysctl.log"
 export ROUTER_DSLITE_NFT_LOG="$tmp/nft.log"
-env=(env PATH="$tmp/bin:$PATH" ROUTER_DSLITE_LIB="$tmp/lib" ROUTER_DSLITE_ETC="$tmp/etc" ROUTER_DSLITE_RUN="$tmp/run" ROUTER_DSLITE_CONFIG="$tmp/etc/router-dslite.conf")
+printf 'lan=br-lan\nguest=guest\niot=iot\n' >"$tmp/network/prefix-map"
+env=(env PATH="$tmp/bin:$PATH" ROUTER_DSLITE_LIB="$tmp/lib" ROUTER_DSLITE_ETC="$tmp/etc" ROUTER_DSLITE_RUN="$tmp/run" ROUTER_DSLITE_CONFIG="$tmp/etc/router-dslite.conf" ROUTER_NETWORK_RUN="$tmp/network")
 "${env[@]}" "$files/router-dslite" apply >/dev/null 2>&1
 grep -qx 'State=ready' "$tmp/run/state"
 grep -qx 'Backend=ip6tnl' "$tmp/run/state"
@@ -66,9 +67,10 @@ grep -qx 'IPv4Forwarding=configured' "$tmp/run/state"
 grep -qx 'IPv4ForwardingPrevious=0' "$tmp/run/state"
 grep -qx 'Firewall=configured' "$tmp/run/state"
 grep -qx 'LANInterfaces=lan,guest,iot' "$tmp/run/state"
-grep -Fqx '  iifname { "lan", "guest", "iot" } oifname "ds-lite" ct state new,established,related counter accept' "$tmp/run/routeros-dslite.nft"
-grep -Fqx '  iifname "ds-lite" oifname { "lan", "guest", "iot" } ct state established,related counter accept' "$tmp/run/routeros-dslite.nft"
+grep -Fqx '  iifname { "br-lan", "guest", "iot" } oifname "ds-lite" ct state new,established,related counter accept' "$tmp/run/routeros-dslite.nft"
+grep -Fqx '  iifname "ds-lite" oifname { "br-lan", "guest", "iot" } ct state established,related counter accept' "$tmp/run/routeros-dslite.nft"
 ! grep -q masquerade "$tmp/run/routeros-dslite.nft"
+grep -qx 'LANLinuxInterfaces=br-lan guest iot' "$tmp/run/state"
 grep -Fqx 'sysctl -w net.ipv4.ip_forward=1' "$tmp/sysctl.log"
 grep -qx 'AFTR=2001:db8:100::20' "$tmp/run/state"
 grep -Fqx -- '-6 tunnel add ds-lite mode ipip6 remote 2001:db8:100::20 local 2001:db8:1::2 dev wan' "$tmp/ip.log"

@@ -1,61 +1,87 @@
 #!/usr/bin/env bash
-# Resolve the RFC 6334 AFTR-Name supplied by a DHCPv6 client hook.
-# The DHCPv6 client owns option parsing; this adapter owns validation, AAAA
-# resolution, reachability, and atomic runtime state.
+# AFTR discovery orchestrator.
+# Priority: explicit AFTR, DHCPv6 Option 64, transix DNS AAAA, cache, stop.
 set -euo pipefail
 run=${ROUTER_DSLITE_RUN:-/run/routeros/dslite}
-wan=${ROUTER_DSLITE_DISCOVERY_WAN:-enp2s0}
+etc=${ROUTER_DSLITE_ETC:-/etc/routeros}
+lib=${ROUTER_DSLITE_LIB:-/usr/lib/routeros}
+config=${ROUTER_DSLITE_CONFIG:-$etc/router-dslite.conf}
+[ -r "$config" ] || config=$lib/router-dslite.conf
+wan=${ROUTER_DSLITE_DISCOVERY_WAN:-$(sed -n 's/^WAN=//p' "$config" 2>/dev/null | tail -n1)}
+wan=${wan:-enp2s0}
 name_file=${ROUTER_DSLITE_AFTR_NAME_FILE:-$run/aftr-name}
 aftr_file=${ROUTER_DSLITE_AFTR_FILE:-$run/aftr}
+meta_file=${ROUTER_DSLITE_AFTR_META_FILE:-$run/aftr-meta}
 status_file=${ROUTER_DSLITE_DISCOVERY_STATUS:-$run/discovery-status}
+dhcp6=${ROUTER_DSLITE_DISCOVER_DHCP6:-$lib/router-dslite-discover-dhcp6}
+transix=${ROUTER_DSLITE_DISCOVER_TRANSIX:-$lib/router-dslite-discover-transix}
+stop_cmd=${ROUTER_DSLITE_STOP_CMD:-/usr/lib/routeros/router-dslite}
 mkdir -p "$run"
-
-atomic_write() {
-  local target=$1
-  shift
-  umask 077
-  "$@" >"$target.new.$$"
-  mv -f "$target.new.$$" "$target"
+value() { sed -n "s/^$1=//p" "$2" 2>/dev/null | tail -n1; }
+atomic() { local target=$1; shift; umask 077; printf '%s\n' "$@" >"$target.new.$$"; mv -f "$target.new.$$" "$target"; }
+status() {
+  local ready=$1 source=$2 message=$3 name=${4:-} address=${5:-} ttl=${6:-0} expires=${7:-0}
+  atomic "$status_file" "Ready=$ready" "Source=$source" "Name=$name" "Address=$address" "WAN=$wan" "ObtainedAt=$(date +%s)" "TTL=$ttl" "ExpiresAt=$expires" "Message=$message"
 }
-fail() {
+valid_address() {
+  local address=$1
+  case "$address" in ''|fe80:*|fc*|fd*|::1|*[!0-9A-Fa-f:]*|*::*::* ) return 1 ;; esac
+  ip -6 route get "$address" oif "$wan" >/dev/null 2>&1
+}
+commit() {
+  local source=$1 candidate=$2 name address ttl expires now
+  name=$(printf '%s\n' "$candidate" | sed -n 's/^Name=//p' | tail -n1)
+  address=$(printf '%s\n' "$candidate" | sed -n 's/^Address=//p' | tail -n1)
+  ttl=$(printf '%s\n' "$candidate" | sed -n 's/^TTL=//p' | tail -n1); ttl=${ttl:-0}
+  expires=$(printf '%s\n' "$candidate" | sed -n 's/^ExpiresAt=//p' | tail -n1)
+  now=$(date +%s)
+  case "$ttl" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$expires" ] || expires=$((now + ttl))
+  case "$expires" in ''|*[!0-9]*) return 1 ;; esac
+  valid_address "$address" || return 1
+  atomic "$aftr_file" "$address"
+  atomic "$meta_file" "Source=$source" "Name=$name" "Address=$address" "WAN=$wan" "ObtainedAt=$now" "TTL=$ttl" "ExpiresAt=$expires"
+  status yes "$source" "candidate committed" "$name" "$address" "$ttl" "$expires"
+  echo "router-dslite discovery: $source $name -> $address (TTL=$ttl)" >&2
+}
+explicit_candidate() {
+  local configured=${1:-}
+  [ -n "$configured" ] && [ "$configured" != unset ] || return 1
+  case "$configured" in
+    *:*) printf 'Name=explicit\nAddress=%s\nTTL=0\nExpiresAt=0\n' "$configured" ;;
+    *)
+      local address
+      address=$(getent ahostsv6 "$configured" 2>/dev/null | awk '$1 !~ /^fe80:/ && $1 !~ /^(fc|fd)/ && $1 !~ /^::1$/ {print $1; exit}')
+      [ -n "$address" ] || return 1
+      printf 'Name=%s\nAddress=%s\nTTL=0\nExpiresAt=0\n' "$configured" "$address"
+      ;;
+  esac
+}
+cache_valid() {
+  local expires now
+  [ -r "$aftr_file" ] && [ -r "$meta_file" ] || return 1
+  expires=$(value ExpiresAt "$meta_file"); now=$(date +%s)
+  case "$expires" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$expires" -gt "$now" ] || return 1
+  valid_address "$(tr -d '[:space:]' <"$aftr_file")"
+}
+fail_closed() {
   local message=$1
-  atomic_write "$status_file" printf 'Ready=no\nSource=dhcpv6-option-64\nMessage=%s\n' "$message"
-  rm -f "$aftr_file"
+  status no none "$message" '' '' 0 0
+  rm -f "$aftr_file" "$meta_file"
+  if [ -x "$stop_cmd" ]; then "$stop_cmd" stop >/dev/null 2>&1 || true; fi
   echo "router-dslite discovery: $message" >&2
   exit 1
 }
-
-[ -r "$name_file" ] || fail "AFTR-Name input is missing"
-name=$(cat "$name_file")
-# Normalize the DNS presentation form, but do not accept an IP literal.
-name=${name%.}
-[ -n "$name" ] || fail "AFTR-Name is empty"
-[ "${#name}" -le 253 ] || fail "AFTR-Name is too long"
-case "$name" in
-  *[!A-Za-z0-9.-]*|.*|*.) fail "AFTR-Name is not a valid DNS name" ;;
-  *[!0-9A-Za-z.-]*) fail "AFTR-Name is not a valid DNS name" ;;
-  *[A-Za-z-]*) ;;
-  *) fail "AFTR-Name must not be an IPv4 literal" ;;
-esac
-old_ifs=$IFS; IFS=.
-read -ra labels <<<"$name"
-IFS=$old_ifs
-[ "${#labels[@]}" -gt 0 ] || fail "AFTR-Name has no labels"
-for label in "${labels[@]}"; do
-  [ -n "$label" ] || fail "AFTR-Name contains an empty label"
-  [ "${#label}" -le 63 ] || fail "AFTR-Name label is too long"
-  case "$label" in
-    -*|*-|*[!A-Za-z0-9-]*) fail "AFTR-Name contains an invalid label" ;;
-  esac
-done
-
-# getent performs normal resolver lookup and returns IPv6 addresses for ahostsv6.
-aftr=$(getent ahostsv6 "$name" | awk '
-  $1 !~ /^fe80:/ && $1 !~ /^(fc|fd)/ && $1 !~ /^::1$/ {print $1; exit}')
-[ -n "$aftr" ] || fail "AFTR-Name has no usable global AAAA record"
-# Do not accept a resolver result that is not reachable over the configured WAN.
-ip -6 route get "$aftr" oif "$wan" >/dev/null 2>&1 || fail "AFTR AAAA is not reachable through WAN $wan"
-
-atomic_write "$aftr_file" printf '%s\n' "$aftr"
-atomic_write "$status_file" printf 'Ready=yes\nSource=dhcpv6-option-64\nName=%s\nAddress=%s\nWAN=%s\n' "$name" "$aftr" "$wan"
-echo "router-dslite discovery: $name -> $aftr (WAN=$wan)" >&2
+configured=$(value AFTR "$config")
+if candidate=$(explicit_candidate "$configured") && commit explicit "$candidate"; then exit 0; fi
+if [ -x "$dhcp6" ] && candidate=$(ROUTER_DSLITE_RUN="$run" ROUTER_DSLITE_DISCOVERY_WAN="$wan" ROUTER_DSLITE_AFTR_NAME_FILE="$name_file" "$dhcp6" 2>/dev/null) && commit dhcpv6-option-64 "$candidate"; then exit 0; fi
+if [ -x "$transix" ] && candidate=$(ROUTER_DSLITE_RUN="$run" ROUTER_DSLITE_DISCOVERY_WAN="$wan" "$transix" 2>/dev/null) && commit transix-dns-gw "$candidate"; then exit 0; fi
+if cache_valid; then
+  address=$(tr -d '[:space:]' <"$aftr_file")
+  name=$(value Name "$meta_file"); ttl=$(value TTL "$meta_file"); expires=$(value ExpiresAt "$meta_file")
+  status yes cache 'last-known-good AFTR retained' "$name" "$address" "$ttl" "$expires"
+  echo "router-dslite discovery: retaining cached AFTR $address" >&2
+  exit 0
+fi
+fail_closed 'no valid AFTR from explicit, DHCPv6 Option 64, transix DNS, or TTL-valid cache'

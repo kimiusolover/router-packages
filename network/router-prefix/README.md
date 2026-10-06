@@ -14,8 +14,21 @@ The manager writes active state and allocations below `/run/routeros/prefix`.
 `active` includes `NATRequired=yes|no` so independent consumers (e.g.
 `router-ipv6-nat`) can decide NAT66 without owning prefix selection.
 
-`prefix-apply` turns allocations into `/run/systemd/network/*.network.d/`
-fragments. Kea and Jool must consume this same registry; the generator does
+`router-network` owns Linux topology and atomically publishes the runtime mapping:
+
+```text
+/run/routeros/network/prefix-map
+lan=br-lan
+guest=guest
+iot=iot
+```
+
+`prefix-manager` remains logical: `lan=1`, `guest=2`, `iot=3`, `vpn=4`.
+`prefix-apply` resolves mapped allocations to Linux interface names and writes
+`20-routeros-<linux-interface>.network.d/` fragments. `vpn` remains in the
+allocation registry but is skipped until router-network publishes a mapping;
+missing mappings for required topology interfaces are fatal. There is no
+fallback from a logical name to an interface name. Kea and Jool must consume this same registry; the generator does
 not own their configuration.
 
 ## PD lifecycle
@@ -43,3 +56,17 @@ This is an internal component: a package build requires a clean
 `router-packages` checkout and records its exact commit in
 `/usr/share/routeros/provenance/router-prefix-build.json`. External source
 archives remain subject to the `router-upstream` source-lock contract.
+
+## Topology contract
+
+`router-network` creates the VLAN/bridge topology and does not delegate it to
+`prefix-manager` or `hostapd`. The default topology is:
+
+```text
+enp2s0 -- VLAN10 -- lan -- br-lan -- wlan0
+enp2s0 -- VLAN20 -- guest
+enp2s0 -- VLAN30 -- iot
+```
+
+The LAN IPv4 address `192.168.10.1/24` belongs to `br-lan`; the `lan` VLAN
+subinterface has no L3 address.

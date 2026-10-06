@@ -25,18 +25,18 @@ if "${run[@]}" "$tmp/router-dslite" check >/dev/null 2>&1; then
   echo 'check accepted missing AFTR' >&2; exit 1
 fi
 grep -qx 'AFTRSource=auto' "$tmp/run/status"
-grep -q 'AFTR discovery is pending (DHCPv6 option 64)' "$tmp/run/status"
+grep -q 'AFTR discovery requires DHCPv6 option 64 or transix DNS fallback' "$tmp/run/status"
 cat >"$tmp/etc/router-dslite.conf" <<'EOF_CONF'
 Enabled=yes
 WAN=wan
 AFTR=2001:db8::aftr
-Backend=auto
+Backend=stub
 EOF_CONF
 "${run[@]}" "$tmp/router-dslite" apply >/dev/null 2>&1
 grep -qx 'State=stub-ready' "$tmp/run/state"
-grep -qx 'RequestedBackend=auto' "$tmp/run/state"
+grep -qx 'RequestedBackend=stub' "$tmp/run/state"
 grep -qx 'Backend=stub' "$tmp/run/state"
 grep -qx 'LocalAddress=2001:db8:1234::2' "$tmp/run/state"
 "${run[@]}" "$tmp/router-dslite" stop >/dev/null 2>&1
 test ! -e "$tmp/run/state"
-echo 'router-dslite validates WAN GUA, treats AFTR as optional, and applies auto stub'
+echo 'router-dslite validates WAN GUA, treats AFTR as optional, and applies explicit stub'

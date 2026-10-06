@@ -9,166 +9,129 @@ readonly state_dir=${ROUTER_NETWORK_STATE:-/run/routeros/network}
 readonly reload=${ROUTER_NETWORK_RELOAD:-yes}
 
 fail() { printf 'router-network: %s\n' "$*" >&2; exit 1; }
-
 [ "${1:-}" = apply ] || { echo "usage: router-network apply" >&2; exit 64; }
-
 [[ -r $discovery ]] || fail "NIC discovery result not found: $discovery"
-
-config_file=$config
-if [[ ! -r $config_file ]]; then
-  config_file=$default_config
-fi
+config_file=$config; [[ -r $config_file ]] || config_file=$default_config
 [[ -r $config_file ]] || fail "network configuration not found: $config"
 
 section_value() { # <file> <section> <key>
   awk -v section="$2" -v key="$3" '
     $0 == "[" section "]" { active = 1; next }
     /^\[/ { active = 0 }
-    active && $0 ~ ("^" key "=") {
-      sub("^[^=]*=", "")
-      print
-      exit
-    }
+    active && $0 ~ ("^" key "=") { sub("^[^=]*=", ""); print; exit }
   ' "$1"
 }
-
+valid_name() { [[ ${1:-} =~ ^[a-z][a-z0-9-]{0,14}$ ]]; }
+valid_port() { valid_name "$1"; }
 wan_role=$(section_value "$discovery" WAN Role)
 wan_if=$(section_value "$discovery" WAN Interface)
 wan_path=$(section_value "$discovery" WAN Path)
-
 [[ $wan_role == wan ]] || fail "WAN is unassigned"
 [[ -n $wan_if ]] || fail "WAN interface is missing"
 [[ -n $wan_path ]] || fail "WAN path is missing"
 
-printf 'router-network: WAN=%s path=%s\n' "$wan_if" "$wan_path"
-
-vlan_ids=$(awk '
-  $0 == "[Network]" { active = 1; next }
-  /^\[/ { active = 0 }
-  active && /^VLANs=/ {
-    sub(/^VLANs=/, "")
-    gsub(/[[:space:]]/, "")
-    gsub(/,/, "\n")
-    print
-  }
-' "$config_file")
-
+vlan_ids=$(awk '$0 == "[Network]" { active=1; next } /^\[/ { active=0 } active && /^VLANs=/ { sub(/^VLANs=/, ""); gsub(/[[:space:]]/, ""); gsub(/,/, "\n"); print }' "$config_file")
 [[ -n $vlan_ids ]] || fail "no VLANs configured in $config_file"
+bridge_name=$(section_value "$config_file" Bridge:br-lan Name); bridge_name=${bridge_name:-br-lan}
+bridge_address=$(section_value "$config_file" Bridge:br-lan Address)
+bridge_ports=$(section_value "$config_file" Bridge:br-lan Ports)
+valid_name "$bridge_name" || fail "invalid bridge name: $bridge_name"
+[[ -n $bridge_ports ]] || fail "Bridge:br-lan Ports is required"
+old_ifs=$IFS; IFS=,; read -ra bridge_port_array <<<"$bridge_ports"; IFS=$old_ifs
+for port in "${bridge_port_array[@]}"; do valid_port "$port" || fail "invalid bridge port: $port"; done
 
 mkdir -p "$run_dir" "$state_dir"
-tmp=$(mktemp -d "$run_dir/.router-network.XXXXXX")
-trap 'rm -rf "$tmp"' EXIT
-
+tmp=$(mktemp -d "$run_dir/.router-network.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
 wan_network=$tmp/10-routeros-wan.network
 {
-  echo '[Match]'
-  echo "Name=$wan_if"
-  echo
-  echo '[Network]'
-  echo 'IPv6AcceptRA=yes'
-  echo 'IPv6Forwarding=yes'
-  echo 'LinkLocalAddressing=ipv6'
+  echo '[Match]'; echo "Name=$wan_if"; echo; echo '[Network]'
+  echo 'IPv6AcceptRA=yes'; echo 'IPv6Forwarding=yes'; echo 'LinkLocalAddressing=ipv6'
 } >"$wan_network"
+bridge_netdev=$tmp/20-routeros-$bridge_name.netdev
+cat >"$bridge_netdev" <<EOF_NETDEV
+[NetDev]
+Name=$bridge_name
+Kind=bridge
+EOF_NETDEV
+bridge_network=$tmp/20-routeros-$bridge_name.network
+{
+  echo '[Match]'; echo "Name=$bridge_name"; echo; echo '[Network]'
+  [[ -n $bridge_address ]] && echo "Address=$bridge_address"
+  echo 'IPv6Forwarding=yes'; echo 'LinkLocalAddressing=ipv6'
+} >"$bridge_network"
 
-declare -a generated=("10-routeros-wan.network")
+declare -a generated=("10-routeros-wan.network" "20-routeros-$bridge_name.netdev" "20-routeros-$bridge_name.network")
 : >"$tmp/state-files"
+: >"$tmp/prefix-map"
+: >"$tmp/prefix-required"
+printf '%s\n' "lan=$bridge_name" >>"$tmp/prefix-map"
+printf '%s\n' lan >>"$tmp/prefix-required"
+for port in "${bridge_port_array[@]}"; do
+  port_network=$tmp/20-routeros-$port.network
+  { echo '[Match]'; echo "Name=$port"; echo; echo '[Network]'; echo "Bridge=$bridge_name"; } >"$port_network"
+  generated+=("20-routeros-$port.network")
+done
 
-declare -A seen_vlan_ids=()
-declare -A seen_names=()
-
+declare -A seen_vlan_ids=() seen_names=()
 while IFS= read -r vid; do
   [[ -n $vid ]] || continue
-  case $vid in
-    *[!0-9]*) fail "invalid VLAN ID: $vid" ;;
-  esac
+  case $vid in *[!0-9]*) fail "invalid VLAN ID: $vid";; esac
   ((vid >= 1 && vid <= 4094)) || fail "VLAN ID out of range: $vid"
-
-  [[ -z ${seen_vlan_ids[$vid]+x} ]] || fail "duplicate VLAN ID: $vid"
-  seen_vlan_ids[$vid]=1
-
+  [[ -z ${seen_vlan_ids[$vid]+x} ]] || fail "duplicate VLAN ID: $vid"; seen_vlan_ids[$vid]=1
   name=$(section_value "$config_file" "VLAN:$vid" Name)
-  if [[ -z $name ]]; then
-    case $vid in
-      10) name=lan ;;
-      20) name=guest ;;
-      30) name=iot ;;
-      *)  name="vlan$vid" ;;
-    esac
-  fi
-  [[ $name =~ ^[a-z][a-z0-9-]*$ && ${#name} -le 15 ]] ||
-    fail "invalid interface name for VLAN $vid: $name"
-
-  [[ -z ${seen_names[$name]+x} ]] || fail "duplicate VLAN interface name: $name"
-  seen_names[$name]=1
-
+  if [[ -z $name ]]; then case $vid in 10) name=lan;; 20) name=guest;; 30) name=iot;; *) name="vlan$vid";; esac; fi
+  valid_name "$name" || fail "invalid interface name for VLAN $vid: $name"
+  [[ -z ${seen_names[$name]+x} ]] || fail "duplicate VLAN interface name: $name"; seen_names[$name]=1
+  bridge=$(section_value "$config_file" "VLAN:$vid" Bridge)
   address=$(section_value "$config_file" "VLAN:$vid" Address)
-
-  # ベース名は prefix-apply が生成する 20-routeros-<name>.network.d の
-  # drop-in 対象と一致させる
-  cat >"$tmp/20-routeros-$name.netdev" <<EOF
+  if [[ $name == lan ]]; then bridge=${bridge:-$bridge_name}; address=; fi
+  if [[ $name == lan && $bridge != "$bridge_name" ]]; then fail "lan VLAN must attach to $bridge_name"; fi
+  cat >"$tmp/20-routeros-$name.netdev" <<EOF_NETDEV
 [NetDev]
 Name=$name
 Kind=vlan
 
 [VLAN]
 Id=$vid
-EOF
-
+EOF_NETDEV
   {
-    echo '[Match]'
-    echo "Name=$name"
-    echo
-    echo '[Network]'
+    echo '[Match]'; echo "Name=$name"; echo; echo '[Network]'
+    [[ -n $bridge ]] && echo "Bridge=$bridge"
     [[ -n $address ]] && echo "Address=$address"
-    echo 'IPv6Forwarding=yes'
-    echo 'LinkLocalAddressing=ipv6'
+    echo 'IPv6Forwarding=yes'; echo 'LinkLocalAddressing=ipv6'
   } >"$tmp/20-routeros-$name.network"
-
   {
-    echo "Interface=$name"
-    echo "VLANID=$vid"
-    echo "Parent=$wan_if"
+    echo "Interface=$name"; echo "VLANID=$vid"; echo "Parent=$wan_if"
+    [[ -n $bridge ]] && echo "Bridge=$bridge"
     [[ -n $address ]] && echo "Address=$address"
   } >"$tmp/state-$name"
-
   echo "VLAN=$name" >>"$wan_network"
-
   generated+=("20-routeros-$name.netdev" "20-routeros-$name.network")
   printf '%s\n' "$name" >>"$tmp/state-files"
+  case "$name" in guest|iot) printf '%s=%s\n' "$name" "$name" >>"$tmp/prefix-map"; printf '%s\n' "$name" >>"$tmp/prefix-required";; esac
   printf 'router-network: VLAN %s -> %s%s\n' "$vid" "$name" "${address:+ address=$address}"
 done <<<"$vlan_ids"
+for logical in lan guest iot; do
+  [[ -n ${seen_names[$logical]+x} ]] || fail "required logical VLAN is missing: $logical"
+done
 
-# 以前に生成した管理ファイルを削除してから新しいファイルを配置する
 if [[ -r $state_dir/generated ]]; then
   while IFS= read -r old; do
-    [[ $old =~ ^(10-routeros-wan\.network|20-routeros-[a-z][a-z0-9-]*\.(netdev|network))$ ]] ||
-      fail "invalid managed file recorded: $old"
+    [[ $old =~ ^(10-routeros-wan\.network|20-routeros-[a-z][a-z0-9-]*\.(netdev|network))$ ]] || fail "invalid managed file recorded: $old"
     rm -f "$run_dir/$old"
   done <"$state_dir/generated"
 fi
 if [[ -r $state_dir/interfaces ]]; then
-  while IFS= read -r old_if; do
-    [[ $old_if =~ ^[a-z][a-z0-9-]*$ ]] || fail "invalid recorded interface: $old_if"
-    rm -f "$state_dir/$old_if"
-  done <"$state_dir/interfaces"
+  while IFS= read -r old_if; do valid_name "$old_if" || fail "invalid recorded interface: $old_if"; rm -f "$state_dir/$old_if"; done <"$state_dir/interfaces"
 fi
-
-for file in "${generated[@]}"; do
-  chmod 0644 "$tmp/$file"
-  mv -f "$tmp/$file" "$run_dir/$file"
-done
+for file in "${generated[@]}"; do chmod 0644 "$tmp/$file"; mv -f "$tmp/$file" "$run_dir/$file"; done
 printf '%s\n' "${generated[@]}" >"$tmp/generated"
-while IFS= read -r name; do
-  mv -f "$tmp/state-$name" "$state_dir/$name"
-done <"$tmp/state-files"
+while IFS= read -r name; do mv -f "$tmp/state-$name" "$state_dir/$name"; done <"$tmp/state-files"
 mv -f "$tmp/state-files" "$state_dir/interfaces"
 mv -f "$tmp/generated" "$state_dir/generated"
-
-rm -rf "$tmp"
-trap - EXIT
-
-if [[ $reload == yes ]]; then
-  networkctl reload
-fi
-
+chmod 0644 "$tmp/prefix-map" "$tmp/prefix-required"
+mv -f "$tmp/prefix-map" "$state_dir/prefix-map"
+mv -f "$tmp/prefix-required" "$state_dir/prefix-required"
+rm -rf "$tmp"; trap - EXIT
+[[ $reload == yes ]] && networkctl reload
 echo 'router-network: configured'

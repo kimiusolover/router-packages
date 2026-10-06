@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Validate and resolve the AFTR-Name written by a DHCPv6 Option 64 hook.
+set -euo pipefail
+run=${ROUTER_DSLITE_RUN:-/run/routeros/dslite}
+wan=${ROUTER_DSLITE_DISCOVERY_WAN:-enp2s0}
+name_file=${ROUTER_DSLITE_AFTR_NAME_FILE:-$run/aftr-name}
+fail() { echo "router-dslite DHCPv6 discovery: $*" >&2; exit 1; }
+[ -r "$name_file" ] || fail 'AFTR-Name input is missing'
+name=$(tr -d '[:space:]' <"$name_file"); name=${name%.}
+[ -n "$name" ] || fail 'AFTR-Name is empty'
+[ "${#name}" -le 253 ] || fail 'AFTR-Name is too long'
+case "$name" in *[!A-Za-z0-9.-]*|.*|*.) fail 'AFTR-Name is not a valid DNS name' ;; esac
+old_ifs=$IFS; IFS=.; read -ra labels <<<"$name"; IFS=$old_ifs
+[ "${#labels[@]}" -gt 0 ] || fail 'AFTR-Name has no labels'
+for label in "${labels[@]}"; do
+  [ -n "$label" ] && [ "${#label}" -le 63 ] || fail 'AFTR-Name label is invalid'
+  case "$label" in -*|*-|*[!A-Za-z0-9-]*) fail 'AFTR-Name label is invalid' ;; esac
+done
+aftr=$(getent ahostsv6 "$name" | awk '$1 !~ /^fe80:/ && $1 !~ /^(fc|fd)/ && $1 !~ /^::1$/ {print $1; exit}')
+[ -n "$aftr" ] || fail 'AFTR-Name has no usable global AAAA record'
+ip -6 route get "$aftr" oif "$wan" >/dev/null 2>&1 || fail "AFTR AAAA is not reachable through WAN $wan"
+# DHCPv6 does not expose a DNS TTL here; use a short revalidation window.
+printf 'Name=%s\nAddress=%s\nTTL=%s\n' "$name" "$aftr" "${ROUTER_DSLITE_DHCP6_TTL:-300}"
