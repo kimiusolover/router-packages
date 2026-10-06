@@ -51,4 +51,28 @@ for file in \
   }
 done
 
+# router-network-ready.target must be packaged through the systemd
+# package's network/systemd/files integration directory.
+target="$root/network/systemd/files/router-network-ready.target"
+test -s "$target" || {
+  echo "missing router-network-ready.target: $target" >&2
+  exit 1
+}
+grep -qx 'After=systemd-networkd.service' "$target" || {
+  echo "router-network-ready.target must order after systemd-networkd.service" >&2
+  exit 1
+}
+grep -qx 'Wants=systemd-networkd.service' "$target" || {
+  echo "router-network-ready.target must want systemd-networkd.service" >&2
+  exit 1
+}
+grep -Fqx 'integration_dir="$root/network/$package/files"' "$root/packaging/build-package" || {
+  echo "package builder is missing the integration directory mapping" >&2
+  exit 1
+}
+grep -Fq 'install -Dm644 "$file" "$DESTDIR/usr/lib/systemd/system/$relative"' "$root/packaging/build-package" || {
+  echo "package builder is missing systemd integration file installation" >&2
+  exit 1
+}
+
 echo "router package recipes and service integration are structurally valid"
